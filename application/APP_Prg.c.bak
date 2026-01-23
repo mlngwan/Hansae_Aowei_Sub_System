@@ -1,0 +1,2757 @@
+/*********************************************************************************/
+/*                                                                               */
+/*                                  CAN Stack                                    */
+/*                                                                               */
+/* ----------------------------------------------------------------------------- */
+/*                                                                               */
+/*                                APP                                            */
+/*                                                                               */
+/*********************************************************************************/
+/*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%                                        */
+/*%%   _____________________________   %%  \file APP_Prg.c                       */
+/*%%  |                             |  %%                                        */
+/*%%  |   &&&&&   &&&&&             |  %%  Module version: 3.6.4                 */
+/*%%  |   &       &    &            |  %%                                        */
+/*%%  |   &&&&    &&&&&             |  %%                                        */
+/*%%  |   &       &    &            |  %%                                        */
+/*%%  |   &&&&&   &&&&&             |  %%                                        */
+/*%%  |_____________________________|  %%                                        */
+/*%%                                   %%                                        */
+/*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%                                        */
+/*********************************************************************************/
+/* Copyright 2010 by Elektrobit Automotive GmbH                                  */
+/* All rights exclusively reserved for Elektrobit Automotive GmbH,               */
+/* unless expressly agreed to otherwise.                                         */
+/*********************************************************************************/
+
+/*  MISRA-C:2004 Deviation List
+ *
+ *  MISRA-1) Deviated Rule: 16.7 (advisory)
+ *   A pointer parameter in a function prototype should be declared as pointer to const
+ *   if the pointer is not used to modify the addressed object.
+ *
+ *   Reason:
+ *   The MISRA rule is not violated. This pointer will be used once the function is completed by customer.
+ */
+
+/******************************** FILE INCLUSION *********************************/
+/*                                                                               */
+/*-------------------------------------------------------------------------------*/
+
+/* - Header Files: EB                                                            */
+#include "EB_Prj.h"
+#include "Board.h"
+#include "CCP.h"
+#include "common.h"
+#include "ADC.h"
+#include "Dspi.h"
+#include "DEM_Priv.h"
+
+/*                                                                               */
+/*********************************************************************************/
+
+/****************************** PUBLIC DEFINITIONS *******************************/
+/*                                                                               */
+/*-------------------------------------------------------------------------------*/
+/* - Public Variables                                                            */
+//NCS_PRI_VAR __attribute__((section(".noinit"))) u32 eBootFlag;
+u8 m_aubDtcActivation;
+
+/*-------------------------------------------------------------------------------*/
+/* - Public Function Prototypes                                                  */
+
+/*-------------------------------------------------------------------------------*/
+/* - Public Callback Prototypes                                                  */
+
+/*                                                                               */
+/*********************************************************************************/
+
+/***************************** PRIVATE DEFINITIONS *******************************/
+/*                                                                               */
+/*-------------------------------------------------------------------------------*/
+/* - Private Constants                                                           */
+
+#define DOWNLOAD_REQUESTED                  0xA55AU
+
+#define NO_OPERATION            0U   /* no program/erase operation */
+#define SA_NOERR 								0U
+#define SA_ERR_UNKNOWN					1U
+#define SA_ERR_KGRE_UnspecifiedError 2U
+#define SA_ERR_BufferToSmall 3U
+
+
+#define PROG_SA_NOT_STARTED             0x00U
+#define PROG_SA_SEED_SENT               0x01U
+
+#define PROG_SECURITY_STATE_LOCK    0U
+#define PROG_SECURITY_STATE_UNLOCK  1U
+
+#define PROG_SECURITY_INITIALE_STATE   PROG_SECURITY_STATE_LOCK
+
+/*-------------------------------------------------------------------------------*/
+/* - Private Types                                                               */
+
+/*-------------------------------------------------------------------------------*/
+/* - Private Variables  */
+
+/* Interrupt context */
+NCS_PRI_VAR u8 m_ubItContext;
+
+/* Value of the Ecu key calculated
+   Range : (0 .. 2^32)                 */
+NCS_PRI_VAR u32 m_ulEcuKey;
+
+typedef u8 tProgSecurityAccessState;
+typedef u8 tSecurityState;
+
+/* Security access management state */
+tProgSecurityAccessState m_ubSecurityAccessState = 0;
+/* security state flag */
+tSecurityState m_eSecurityState = 0;
+
+
+/*-------------------------------------------------------------------------------*/
+/* - Private Macros                                                              */
+
+/*-------------------------------------------------------------------------------*/
+/* - Private Function Prototypes                                                 */
+
+/*                                                                               */
+/*********************************************************************************/
+
+/******************************** IMPLEMENTATION *********************************/
+/*                                                                               */
+
+/*-------------------------------------------------------------------------------*/
+/* - Public Functions                                                            */
+
+#include <board.h>
+
+/*--------------------------{NAMI GenerateKeyEx}--------------------------------------*/
+u32 GenerateKeyEx(const unsigned char * ipSeedArray, unsigned int iSeedArraySize,
+   								unsigned char * iopKeyArray, unsigned int * oActualKeyArraySize)
+{	
+	//Algorithm coefficients
+	#define A_COEFF_BIT_LOCATION 30
+	#define B_COEFF_BIT_LOCATION 3
+	#define C_COEFF_BIT_LOCATION 7
+	#define D_COEFF_BIT_LOCATION 6
+	#define E_COEFF_BIT_LOCATION 9
+	#define F_COEFF_BIT_LOCATION 11
+	#define G_COEFF_BIT_LOCATION 16
+	#define H_COEFF_BIT_LOCATION 18
+	#define J_COEFF_BIT_LOCATION 4
+
+	//Bit inversion operation specification
+	#define	BIT_INV_A_1	6
+	#define	BIT_INV_A_2	1
+	#define	BIT_INV_A_3	31
+	#define	BIT_INV_B_1	8
+	#define	BIT_INV_B_2	3
+	#define	BIT_INV_B_3	5
+	#define	BIT_INV_C_1	28
+	#define	BIT_INV_C_2	18
+	#define	BIT_INV_C_3	24
+	
+	//Bit inversion selection
+	#define NO_INVERSION	0
+	#define BIT_INVERSION_A	1
+	#define BIT_INVERSION_B	2
+	#define BIT_INVERSION_C	3
+
+	//Bitwise operation
+	#define SEED_AND_RESULT	1
+	#define SEED_XOR_RESULT	2
+	#define SEED_OR_RESULT	3
+
+	unsigned char a_coeff = 0;	//Bit-shift direction
+	unsigned char b_coeff = 0;	//Number of overlapping bit-shifts MSb
+	unsigned char c_coeff = 0;	//Number of overlapping bit-shifts
+	unsigned char d_coeff = 0;	//Number of overlapping bit-shifts
+	unsigned char e_coeff = 0;	//Number of overlapping bit-shifts LSb
+	unsigned char f_coeff = 0;	//Bit inversion selection MSb
+	unsigned char g_coeff = 0;	//Bit inversion selection LSb
+	unsigned char h_coeff = 0;	//Bitwise operation MSb
+	unsigned char j_coeff = 0;	//Bitwise operation LSb
+
+	unsigned char numOverlappingBitShifts = 0;
+	unsigned char bitInversionRule = 0;
+	unsigned char bitwiseOperation = 0;
+
+	unsigned int Seed = 0;
+	unsigned int Result = 0;
+	unsigned int Key = 0;
+	unsigned char i = 0;
+
+	//Expect a seed of 4 bytes
+	if ( !(iSeedArraySize==4) )
+	{
+		return SA_ERR_BufferToSmall;
+	}
+	else
+	{		
+		Seed = (unsigned int)((ipSeedArray[0] << 24) | (ipSeedArray[1] << 16) | (ipSeedArray[2] << 8) | (ipSeedArray[3]));
+		Result = Seed;
+
+		//Extract the coefficients
+		a_coeff = (unsigned char)((Seed >> A_COEFF_BIT_LOCATION) & 0x01);
+		b_coeff = (unsigned char)((Seed >> B_COEFF_BIT_LOCATION) & 0x01);
+		c_coeff = (unsigned char)((Seed >> C_COEFF_BIT_LOCATION) & 0x01);
+		d_coeff = (unsigned char)((Seed >> D_COEFF_BIT_LOCATION) & 0x01);
+		e_coeff = (unsigned char)((Seed >> E_COEFF_BIT_LOCATION) & 0x01);
+		f_coeff = (unsigned char)((Seed >> F_COEFF_BIT_LOCATION) & 0x01);
+		g_coeff = (unsigned char)((Seed >> G_COEFF_BIT_LOCATION) & 0x01);
+		h_coeff = (unsigned char)((Seed >> H_COEFF_BIT_LOCATION) & 0x01);
+		j_coeff = (unsigned char)((Seed >> J_COEFF_BIT_LOCATION) & 0x01);
+
+		numOverlappingBitShifts = (unsigned char)((b_coeff << 3) | (c_coeff << 2) | (d_coeff << 1) | e_coeff);
+		bitInversionRule = (unsigned char)((f_coeff << 1) | g_coeff);
+		bitwiseOperation = (unsigned char)((h_coeff << 1) | j_coeff);
+
+		//a coefficient controls the shift direction
+		if (!a_coeff)
+		{
+			//Shift direction = left
+			for (i = 0; i < numOverlappingBitShifts; i++)
+			{
+				Result = (unsigned int)((Result << 1) | (Result >> 31));
+			}
+		}
+		else
+		{
+			//Shift direction = right
+			for (i = 0; i < numOverlappingBitShifts; i++)
+			{
+				Result = (unsigned int)((Result << 31) | (Result >> 1));
+			}
+		}
+
+		switch (bitInversionRule)
+		{
+			case NO_INVERSION:
+				//Do nothing
+				break;
+
+			case BIT_INVERSION_A:
+				Result ^= (unsigned int)(1 << BIT_INV_A_1);
+				Result ^= (unsigned int)(1 << BIT_INV_A_2);
+				Result ^= (unsigned int)(1 << BIT_INV_A_3);
+				break;
+
+			case BIT_INVERSION_B:
+				Result ^= (unsigned int)(1 << BIT_INV_B_1);
+				Result ^= (unsigned int)(1 << BIT_INV_B_2);
+				Result ^= (unsigned int)(1 << BIT_INV_B_3);
+				break;
+
+			case BIT_INVERSION_C:
+				Result ^= (unsigned int)(1 << BIT_INV_C_1);
+				Result ^= (unsigned int)(1 << BIT_INV_C_2);
+				Result ^= (unsigned int)(1 << BIT_INV_C_3);
+				break;
+
+			default:
+				return SA_ERR_KGRE_UnspecifiedError;
+		}
+
+		switch(bitwiseOperation)
+		{
+			case NO_OPERATION:
+				Key = Result;
+				break;
+			case SEED_AND_RESULT:
+				Key = (unsigned int)(Seed & Result);
+				break;
+			case SEED_XOR_RESULT:
+				Key = (unsigned int)(Seed ^ Result);
+				break;
+			case SEED_OR_RESULT:
+				Key = (unsigned int)(Seed | Result);
+				break;			
+
+			default:
+				return SA_ERR_KGRE_UnspecifiedError;
+		}
+	}
+
+	iopKeyArray[0] = (unsigned char)(Key >> 24);
+	iopKeyArray[1] = (unsigned char)(Key >> 16);
+	iopKeyArray[2] = (unsigned char)(Key >> 8);
+	iopKeyArray[3] = (unsigned char)Key;
+	*oActualKeyArraySize = 4;
+	
+	return SA_NOERR;
+}
+/*--------------------------{NAMI GenerateKeyEx}--------------------------------------*/
+
+/*--------------------------{PROG_SeedGeneration}--------------------------------------*/
+u32 PROG_SeedGeneration(u16 uwTime)
+{
+    OSC_PARAM_UNUSED(uwTime);
+	uwTime = BoardGetRandom();
+    return uwTime;
+}
+/*--------------------------{end PROG_SeedGeneration}----------------------------------*/
+
+/*--------------------------{PROG_CalculateUceKey}--------------------------------------*/
+u32 PROG_CalculateUceKey(u32 ulSeedGenerated)
+{
+	u32 ulCalculatedKey = 0;
+	u32 ulKeySize = 0;
+	u8 uRet = SA_ERR_UNKNOWN;
+	u32 iSeedArraySize = 4;
+	uRet = GenerateKeyEx((const unsigned char *)&ulSeedGenerated,(unsigned int)iSeedArraySize,(unsigned char *)&ulCalculatedKey,(unsigned int *)&ulKeySize);
+	if(uRet != SA_NOERR)
+	{
+		ulCalculatedKey = 0;
+	}
+    return (ulCalculatedKey);
+}
+/*--------------------------{end PROG_CalculateUceKey}----------------------------------*/
+
+/*----------------------------------{PROG_Sa1Managment}--------------------------------*/
+tUdsStatus PROG_Sa1Managment (u16 *puwLen, u8 *aubUdsData)
+{
+    tUdsStatus eStatus;
+    u32 ulSeedGenerated;
+
+    eStatus = UDS_ACK;
+
+    /* Implements : 000-07-D028-D-91503-1
+       Implements : 000-07-D028-D-91504-1
+       Generate the SEED value */
+    ulSeedGenerated = PROG_SeedGeneration(0U);
+
+    /* Implements : 000-07-D028-D-91505-1
+       Calculate the UCE key */
+    m_ulEcuKey = PROG_CalculateUceKey(ulSeedGenerated);
+
+    /* Fill the answer */
+    aubUdsData[2] = (u8) (ulSeedGenerated >> 24);
+    aubUdsData[3] = (u8) (ulSeedGenerated >> 16);
+    aubUdsData[4] = (u8) (ulSeedGenerated >> 8);
+    aubUdsData[5] = (u8) ulSeedGenerated;
+    *puwLen = 6;
+
+    return eStatus;
+}
+/*----------------------------------{end PROG_Sa1Managment}----------------------------*/
+
+
+/*----------------------------------{PROG_Sa2Managment}--------------------------------*/
+tUdsStatus PROG_Sa2Managment (u16 *puwLen, const u8 *aubUdsData)
+{
+    tUdsStatus eStatus;
+    u32 ulKeyReceived;
+
+    eStatus = UDS_ACK;
+
+    /* Recover the Key value received */
+    ulKeyReceived = (u32)(((u32)(aubUdsData[2]) << 24U)
+                     + ((u32)(aubUdsData[3]) << 16U)
+                     + ((u32)(aubUdsData[4]) << 8U)
+                     + (u32)(aubUdsData[5]));
+
+    if(ulKeyReceived == m_ulEcuKey)
+    {
+        eStatus = UDS_ACK;
+        *puwLen = 2U;
+    }
+    else
+    {
+        eStatus = UDS_NRC_35;
+    }
+
+    return eStatus;
+}
+/*----------------------------------{end PROG_Sa2Managment}----------------------------*/
+
+/*----------------------------------{PROG_OpenProgrammingSession}----------------*/
+void PROG_OpenProgrammingSession(void)
+{
+  /* Initialize the different flags of the PROG layer */
+  m_ubSecurityAccessState = PROG_SA_NOT_STARTED;
+  m_eSecurityState = PROG_SECURITY_STATE_LOCK;
+	fAppInit_Mutex = 1;
+}
+/*----------------------------------{end PROG_OpenProgrammingSession}------------*/
+
+/*-------------------------------------------------------------------------------*/
+/* - Public Functions                                                            */
+
+/*--------------------------{APP_InterruptEnable}--------------------------------------*/
+void APP_InterruptEnable (u8 ebStatus)
+{
+
+    /* Implement here a treatment for a critical section exit. */
+			
+//		CAN_InterruptDisable();			
+    /* Interrupts must be resumed. */
+    m_ubItContext = ebStatus;
+}
+/*--------------------------{end APP_InterruptEnable}----------------------------------*/
+
+/*--------------------------{APP_InterruptDisable}--------------------------------------*/
+u8 APP_InterruptDisable (void)
+{
+
+    /* Implement here a treatment for a critical section entry. */
+    /* Interrupts must be suspended. */
+    return (m_ubItContext);
+}
+/*--------------------------{end APP_InterruptDisable}----------------------------------*/
+#define NM_COUNTER_MAX 170U
+#define NM_COUNTER_MIN 0U
+
+ubyte	ubMissMessageTimer[COM_MON_NODE_MAX];
+/*--------------------------{APP_Init}--------------------------------------*/
+void APP_Init (void)
+{
+	u8 i;
+	EB_Init();
+
+	/* Activation of periodic frames to be send */
+	/* Start ABSENT frames monitoring */
+	(void)COM_Periodic(COM_PERIODIC_START);
+
+	for (i = 0; i < COM_MON_NODE_MAX; i++)
+	{
+		ubMissMessageTimer[i] = NM_COUNTER_MAX;
+	}
+	
+	DEM_StartOperatingCycle();
+
+}
+/*--------------------------{end APP_Init}----------------------------------*/
+
+/*--------------------------{APP_RestoreContext}--------------------------------------*/
+void APP_RestoreContext (void)
+{
+    /* After asynchronous reload from the non volatile memory, */
+    /* reactivate the context into the related stack layers. */
+}
+/*--------------------------{end APP_RestoreContext}----------------------------------*/
+
+
+
+
+/*--------------------------{APP_Manage}--------------------------------------*/
+void APP_Manage (void)
+{
+}
+/*--------------------------{end APP_Manage}----------------------------------*/
+
+
+
+
+/*--------------------------{APP_ComNAsInd}--------------------------------------*/
+void APP_ComNAsInd (tComFrameIdx uFrameIdx)
+{
+    OSC_PARAM_UNUSED(uFrameIdx);
+}
+/*--------------------------{end APP_ComNAsInd}----------------------------------*/
+
+/*--------------------------{APP_ComTxTimeoutInd}--------------------------------------*/
+tComStatus APP_ComTxTimeoutInd (tComFrameIdx uFrameIdx)
+{
+    OSC_PARAM_UNUSED(uFrameIdx);
+
+    return COM_ERR_OK;
+}
+/*--------------------------{end APP_ComTxTimeoutInd}----------------------------------*/
+
+/*--------------------------{APP_ComTxConf}--------------------------------------*/
+void APP_ComTxConf (tComFrameIdx uFrameIdx)
+{
+//sb 	if (uFrameIdx == COM_FRAME_IDX_CCP_DTO)
+	{
+//sb		ccpSendCallBack();
+	}
+//sb 	else if(uFrameIdx == COM_FRAME_IDX_EPB_Status)
+
+//		if(uFrameIdx == COM_FRAME_IDX_EPB1L_01_Info)
+	{
+//		if(++EPB_RC > 0x0F) EPB_RC = 0;
+//		m_aaubComFrameData[COM_FRAME_IDX_EPB1L_01_Info][3] = (u8)((u8)(EPB_RC<<4U)|0x0fU) 
+ //   & (m_aaubComFrameData[COM_FRAME_IDX_EPB1L_01_Info][3] | (u8)((u8)(EPB_RC<<4U)&0xf0U));
+	}
+}
+/*--------------------------{end APP_ComTxConf}----------------------------------*/
+
+/*--------------------------{APP_ComModeModifyExtension}--------------------------------------*/
+void APP_ComModeModifyExtension (tComMode eCurMode)
+{
+    OSC_PARAM_UNUSED(eCurMode);
+}
+/*--------------------------{end APP_ComModeModifyExtension}----------------------------------*/
+
+/*--------------------------{APP_ComTxFrameInd}--------------------------------------*/
+void APP_ComTxFrameInd (tComFrameIdx uFrameIdx)
+{
+    OSC_PARAM_UNUSED(uFrameIdx);
+}
+/*--------------------------{end APP_ComTxFrameInd}----------------------------------*/
+
+Flag_Type	ubCanRxFrameInd1,ubCanRxFrameInd2; 
+/*--------------------------{OnRxFrameESP02}--------------------------------------*/
+u8 OnRxFrameESP02(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_ESP02 = 1;
+	Cnt_BusOff = 0;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameESP02}----------------------------------*/
+
+/*--------------------------{OnRxFrameESP03}--------------------------------------*/
+u8 OnRxFrameESP03(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_ESP03 = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameESP03}----------------------------------*/
+
+/*--------------------------{OnRxFrameECU14}--------------------------------------*/
+u8 OnRxFrameECU14(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_ECU14 = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameECU14}----------------------------------*/
+
+/*--------------------------{OnRxFrameEMS3}--------------------------------------*/
+u8 OnRxFrameEMS3(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_EMS_3 = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameEMS3}----------------------------------*/
+
+/*--------------------------{OnRxFrameTCU}--------------------------------------*/
+u8 OnRxFrameTCU(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_TCU = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameTCU}----------------------------------*/
+
+/*--------------------------{OnRxFrameESP04}--------------------------------------*/
+u8 OnRxFrameESP04(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_ESP04 = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameESP04}----------------------------------*/
+
+/*--------------------------{OnRxFrameESP09}--------------------------------------*/
+u8 OnRxFrameESP09(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_ESP09 = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameESP09}----------------------------------*/
+
+/*--------------------------{OnRxFrameYRS02}--------------------------------------*/
+u8 OnRxFrameYRS02(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_YRS = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+
+}
+/*--------------------------{end OnRxFrameYRS02}----------------------------------*/
+
+/*--------------------------{OnRxFrameVeh02}--------------------------------------*/
+u8 OnRxFrameVeh02(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_Veh02 = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameVeh02}----------------------------------*/
+
+/*--------------------------{OnRxFrameACU01}--------------------------------------*/
+u8 OnRxFrameACU01(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_ACU01 = 1;
+	return COM_RX_IND_CHECK_OK;
+
+}
+/*--------------------------{end OnRxFrameACU01}----------------------------------*/
+
+/*--------------------------{OnRxFrameState}--------------------------------------*/
+u8 OnRxFrameState(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_BCMVEH = 1;
+
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameState}----------------------------------*/
+
+/*--------------------------{OnRxFrameLock}--------------------------------------*/
+u8 OnRxFrameLock(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_LOCK = 1;
+
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameLock}----------------------------------*/
+
+/*--------------------------{OnRxFrameESP05}--------------------------------------*/
+u8 OnRxFrameESP05(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_ESP05 = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameESP05}----------------------------------*/
+
+/*--------------------------{OnRxFrameESP05}--------------------------------------*/
+u8 OnRxFrameFIU(tComFrameIdx uFrameIdx)
+{
+	/* Signal clearance confirmation */
+	fbRxInd_FIU = 1;
+	
+	return COM_RX_IND_CHECK_OK;
+}
+/*--------------------------{end OnRxFrameESP05}----------------------------------*/
+
+/*--------------------------{APP_ComBackInd}--------------------------------------*/
+void APP_ComBackInd (tComMonNodeIdx uNodeIdx)
+{
+	ubMissMessageTimer[uNodeIdx] = NM_COUNTER_MAX;
+}
+/*--------------------------{end APP_ComBackInd}----------------------------------*/
+
+/*--------------------------{APP_ComLossInd}--------------------------------------*/
+void APP_ComLossInd (tComMonNodeIdx uNodeIdx)
+{
+	if(ubMissMessageTimer[uNodeIdx] > 1)
+	{
+		ubMissMessageTimer[uNodeIdx]--;
+	}
+}
+/*--------------------------{end APP_ComLossInd}----------------------------------*/
+
+/*--------------------------{APP_COM_MonNodeStatusInd}--------------------------------------*/
+void APP_COM_MonNodeStatusInd(tComMonNodeIdx uNodeIdx, tComMonStatus eFrameStatus)
+{
+	u8 ubIdx;
+	u8 ubDtcIdx = 0xFFU;
+	u8 aubContext[DEM_CONTEXT_SIZE];
+#if 0
+	switch (uNodeIdx)
+	{
+		case COM_NODE_IDX_MissingMessageEMS:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEEMS;
+		break;
+		case COM_NODE_IDX_MissingMessageTCU:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGETCU;
+		break;
+		case COM_NODE_IDX_MissingMessageESP02:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEESP;
+		break;
+		case COM_NODE_IDX_MissingMessageESP03:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEESP;
+		break;
+		case COM_NODE_IDX_MissingMessageESP04:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEESP;
+		break;
+		case COM_NODE_IDX_MissingMessageESP05:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEESP;
+		break;
+		case COM_NODE_IDX_MissingMessageESP09:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEESP;
+		break;
+		case COM_NODE_IDX_MissingMessageYRS:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEYRS;
+		break;
+		case COM_NODE_IDX_MissingMessageBcmCtr:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEBCM;
+		break;
+		case COM_NODE_IDX_MissingMessageBcmVeh:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEBCM;
+		break;
+		case COM_NODE_IDX_MissingMessageACU:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEACU;
+		break;
+		case COM_NODE_IDX_MissingMessageFIU:
+			ubDtcIdx = DEM_DTC_IDX_DTC_MISSINGMESSAGEFIU;
+		break;
+		default:break;
+	}
+
+	if (ubDtcIdx < DEM_DTC_NUMBER)
+	{
+		switch (eFrameStatus)
+		{
+			case COM_MON_OK:
+				if (ubMissMessageTimer[ubDtcIdx] > 0)
+				{
+					/* Signal clearance confirmation */
+					DEM_DtcTestStatus(ubDtcIdx, DEM_TEST_PASS);
+					ubMissMessageTimer[uNodeIdx] = NM_COUNTER_MAX;
+//					DEM_SetStatusMask(ubDtcIdx, DEM_TEST_PASS);
+//					DEM_DefectSnapshotFrozen
+				}
+				else
+				{
+					/* Signal Defect confirmation */
+					DEM_DtcTestStatus(ubDtcIdx, DEM_TEST_FAIL);
+					ubMissMessageTimer[uNodeIdx] = 0;
+				}
+			break;
+			case COM_MON_NOK:
+				if(ubMissMessageTimer[uNodeIdx] > 1)
+				{
+					ubMissMessageTimer[uNodeIdx]--;
+				}
+				else
+				{
+					/* Signal Defect confirmation */
+					for (ubIdx = 0U; ubIdx < DEM_CONTEXT_SIZE; ubIdx++)
+					{
+						aubContext[ubIdx] = ubIdx;
+					}
+					if(DEM_MODE_ON == m_aubDtcActivation)
+					{
+						DEM_DefectSnapshotFrozen(ubDtcIdx,aubContext);
+						DEM_DtcTestStatus(ubDtcIdx, DEM_TEST_FAIL);
+					}
+				}
+			break;
+			default:break;
+		}
+	}
+#endif
+}
+/*--------------------------{end APP_COM_MonNodeStatusInd}----------------------------------*/
+
+/*--------------------------{UDS_Default_Session}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus UDS_Default_Session(u16 *puwLen, u8 *aubUdsData)
+{
+
+    OSC_PARAM_UNUSED(puwLen);
+    OSC_PARAM_UNUSED(aubUdsData);
+
+    return UDS_ACK;
+}
+/*--------------------------{end UDS_Default_Session}----------------------------------*/
+
+/*--------------------------{UDS_ProgrammingSession}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus UDS_ProgrammingSession(u16 *puwLen, u8 *aubUdsData)
+{
+  /* RQIM-UDS-002-1 */
+  /* Firstly, check specific condition to jump in bootloader (if condition NOK, return NRC_22) */
+  /* Then, set BootFlag to DOWNLOAD_REQUESTED */
+  /* Request a reset */
+  /* If needed (eg reset need time), deactivate response since it will be done in bootloader after jump */
+  OSC_PARAM_UNUSED(puwLen);
+  OSC_PARAM_UNUSED(aubUdsData);
+
+	PROG_OpenProgrammingSession();
+#if 1
+	if(aubUdsData[1] & 0x80)
+	{
+		SPR_Req = 0x80;
+	}
+
+	return UDS_ACK;
+#else
+	eBootFlag = DOWNLOAD_REQUESTED;
+
+	Cnt_ResetDelay = 0;
+	ECU_Reset_Bit = 1;
+
+	return UDS_NRC_78;
+#endif
+}
+/*--------------------------{end UDS_ProgrammingSession}----------------------------------*/
+
+/*--------------------------{UDS_Extended_Session}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus UDS_Extended_Session(u16 *puwLen, u8 *aubUdsData)
+{
+
+  OSC_PARAM_UNUSED(puwLen);
+  OSC_PARAM_UNUSED(aubUdsData);
+	
+	PROG_OpenProgrammingSession();
+	
+  return UDS_ACK;
+}
+/*--------------------------{end UDS_Extended_Session}----------------------------------*/
+
+/*--------------------------{UDS_ReportDtcByStatusMask}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus UDS_ReportDtcByStatusMask(u16 *puwLen, u8 *aubUdsData)
+{
+	u8	i,eUdsStatus,ubUdsData[150],udsRxData;
+	u8 ubDtcIdx;
+
+	
+	/* Check the status mask of all DTC */
+	for (ubDtcIdx = 0U; ubDtcIdx < DEM_DTC_MAX; ubDtcIdx++)
+	{
+		m_astDtcLocalStatus[ubDtcIdx].ubDtcStatusMask = m_astDtcLocalStatus[ubDtcIdx].ubDtcStatusMask & 0x09;
+	}
+	eUdsStatus = DEM_ReportDtcByStatusMask(puwLen,aubUdsData);
+
+	*(aubUdsData+2) = 0x09;
+
+  return eUdsStatus;
+}
+/*--------------------------{end UDS_ReportDtcByStatusMask}----------------------------------*/
+
+/*--------------------------{EPB_TestMode}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus EPB_TestMode(u16 *puwLen, u8 *aubUdsData)
+{
+
+    OSC_PARAM_UNUSED(puwLen);
+    OSC_PARAM_UNUSED(aubUdsData);
+
+	if(!TestModeEnable_Flag)
+	{
+		TestModeEnable_Flag = 0xA5;
+		Test_Step = 0x00;			// First Test Step setting.
+	}
+
+    return UDS_ACK;
+}
+/*--------------------------{end EPB_TestMode}----------------------------------*/
+
+ubyte	Cnt_BusOff;
+/*--------------------------{CAN_BusOffInd}--------------------------------------*/
+void CAN_BusOffInd (void)
+{
+    /* Set CAN HW to BusOff and unlock upper layer (TP) with CAN_TxFail function */
+#if (CAN_CTRL_NB>1)
+    CAN_BusOff(NM_CAN_BUS_IDX);
+#else
+    CAN_BusOff();
+#endif
+
+    /* Set COM to BUS_OFF: CAN is deactivated */
+    (void) COM_ModeModify(COM_MODE_BUS_OFF);
+
+    /* Set COM to BUS_ON: CAN is activated */
+    (void) COM_ModeModify(COM_MODE_BUS_ON);
+
+		if(Cnt_BusOff > 29)
+		{
+			Cnt_BusOff = 200;
+			/* Signal Defect confirmation */
+	//sb	 DEM_DtcTestStatus(DEM_DTC_IDX_DTC_CAN_BUS_OFF, DEM_TEST_FAIL);
+		}
+		
+    /* Set CAN HW to BusOn */
+#if (CAN_CTRL_NB>1)
+    CAN_BusOn(NM_CAN_BUS_IDX);
+#else
+    CAN_BusOn();
+#endif
+}
+/*--------------------------{end CAN_BusOffInd}----------------------------------*/
+
+/*--------------------------{UDS_P2AboutToExpireInd}--------------------------------------*/
+void UDS_P2AboutToExpireInd(void)
+{
+
+}
+/*--------------------------{end UDS_P2AboutToExpireInd}----------------------------------*/
+
+/*--------------------------{APP_UdsSessionStatusInd}--------------------------------------*/
+void APP_UdsSessionStatusInd (tUdsSessionType eUdsNewSessType,tUdsSessionType eUdsOldSessType,tUdsChangeReason eUdsChangingCause)
+{
+    OSC_PARAM_UNUSED(eUdsOldSessType);
+    OSC_PARAM_UNUSED(eUdsChangingCause);
+
+    OSC_PARAM_UNUSED(eUdsNewSessType);
+
+}
+/*--------------------------{end APP_UdsSessionStatusInd}----------------------------------*/
+
+/*--------------------------{APP_TpDataBufferEmptyInd}--------------------------------------*/
+void APP_TpDataBufferEmptyInd (tTpMsgIdx uMsgIdx)
+{
+    OSC_PARAM_UNUSED(uMsgIdx);
+}
+/*--------------------------{end APP_TpDataBufferEmptyInd}----------------------------------*/
+
+/*--------------------------{APP_TpTxConf}--------------------------------------*/
+void APP_TpTxConf (tTpMsgIdx uMsgIdx, u8 ebStatus)
+{
+    OSC_PARAM_UNUSED(uMsgIdx);
+    OSC_PARAM_UNUSED(ebStatus);
+}
+/*--------------------------{end APP_TpTxConf}----------------------------------*/
+
+/*--------------------------{APP_TpRxInd}--------------------------------------*/
+void APP_TpRxInd (tTpMsgIdx uMsgIdx, u8 ebStatus)
+{
+    OSC_PARAM_UNUSED(uMsgIdx);
+    OSC_PARAM_UNUSED(ebStatus);
+}
+/*--------------------------{end APP_TpRxInd}----------------------------------*/
+
+/*--------------------------{APP_TpRxEnableInd}--------------------------------------*/
+void APP_TpRxEnableInd (tTpMsgIdx uMsgIdx, tTpRxEnable uRxEnable)
+{
+    OSC_PARAM_UNUSED(uMsgIdx);
+    OSC_PARAM_UNUSED(uRxEnable);
+}
+/*--------------------------{end APP_TpRxEnableInd}----------------------------------*/
+
+/*--------------------------{APP_GetUdsDataBufferInd}--------------------------------------*/
+/* Deviation MISRA-1 */
+void APP_GetUdsDataBufferInd(u16 *uwLen, u8 *paubUdsData, tTpMsgIdx uMsgIdx, tUdsStatus eStatusRxReq)
+{
+    OSC_PARAM_UNUSED(uMsgIdx);
+    OSC_PARAM_UNUSED(eStatusRxReq);
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((uwLen != NULL) && (paubUdsData != NULL))
+    {
+        OSC_PARAM_UNUSED(uwLen);
+        OSC_PARAM_UNUSED(paubUdsData);
+    }
+}
+
+/*--------------------------{end APP_GetUdsDataBufferInd}----------------------------------*/
+
+
+#if (CAN_WAKE_UP_DETECTION  == CAN_WAKE_UP_ACTIVATE)
+/*--------------------------{APP_CanWakeUpInd}--------------------------------------*/
+void APP_CanWakeUpInd (void)
+{
+}
+/*--------------------------{end APP_CanWakeUpInd}----------------------------------*/
+#endif
+
+/*--------------------------{APP_CanCtrlModeErrorInd}--------------------------------------*/
+void APP_CanCtrlModeErrorInd (tCanErrors uErrorID)
+{
+    OSC_PARAM_UNUSED(uErrorID);
+}
+/*--------------------------{end APP_CanCtrlModeErrorInd}----------------------------------*/
+
+
+
+/*--------------------------{NCS_SdfVariableCoherencyError}--------------------------------------*/
+void NCS_SdfVariableCoherencyError(u16 uwParam)
+{
+    OSC_PARAM_UNUSED(uwParam);
+}
+/*--------------------------{end NCS_SdfVariableCoherencyError}----------------------------------*/
+
+/*--------------------------{NCS_SdfVariableRangeError}--------------------------------------*/
+void NCS_SdfVariableRangeError(u16 uwParam)
+{
+    OSC_PARAM_UNUSED(uwParam);
+}
+/*--------------------------{end NCS_SdfVariableRangeError}----------------------------------*/
+
+/*--------------------------{App_CCP_CRO}--------------------------------------*/
+void App_CCP_CRO(tComFrameIdx uFrameIdx)
+{
+    u8 aubData[8]={0};
+    COM_GetFrameData (uFrameIdx, aubData);
+
+    ccpCommand(&(aubData[0]));
+}
+/*--------------------------{end App_CCP_CRO}----------------------------------*/
+
+/*sb
+ubyte	Cnt_InvalidDLC[COM_RX_FRAME_MAX] =
+{
+3,3,3,3,3,
+3,3,3,3,3,
+3,3,3,3,3,
+3
+};
+*/
+/*--------------------------{RxInvalidMessage_DLC}--------------------------------------*/
+void RxInvalidMessage_DLC(tComFrameIdx uFrameIdx)
+{
+	u8 ubDtcIdx = 0xFFU;
+//sb		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_CAN_BUS_OFF].ubDtcStatusMask, DEM_SM_TF, u8))			// Not Bus-Off failure.
+	{
+//		if((SSMInput.SSMInIgnition) &&							// When T15 is on and
+//			(!DiagInput.D2_Battery))									// Battery voltage is in operating range.
+		{
+//sb			switch(uFrameIdx)
+			{
+//sb				case COM_FRAME_IDX_ESP_02:
+//sb				case COM_FRAME_IDX_ESP_03:
+//sb				case COM_FRAME_IDX_ESP_04:
+//sb				case COM_FRAME_IDX_ESP_05:
+//sb				case COM_FRAME_IDX_ESP_09:
+//sb					ubDtcIdx = DEM_DTC_IDX_DTC_MSGFAILUREESP;
+//				break;
+//sb				case COM_FRAME_IDX_ECU_14:
+//sb				case COM_FRAME_IDX_EMS_3:
+//				case COM_FRAME_IDX_ECU_Veh_02:
+//					ubDtcIdx = DEM_DTC_IDX_DTC_MSGFAILUREEMS;
+//				break;
+//				case COM_FRAME_IDX_TCU_R932_1:
+//					ubDtcIdx = DEM_DTC_IDX_DTC_MSGFAILURETCU;
+//				break;
+//				case COM_FRAME_IDX_ESP_YRS_02:
+//					ubDtcIdx = DEM_DTC_IDX_DTC_MSGFAILUREYRS;
+//				break;
+//				case COM_FRAME_IDX_BCM_VEH_STATE:
+//				case COM_FRAME_IDX_BCM_LOCK_CTR:
+//				ubDtcIdx = DEM_DTC_IDX_DTC_MSGFAILUREBCM;
+//				break;
+//				case COM_FRAME_IDX_ACU_01:
+//					ubDtcIdx = DEM_DTC_IDX_DTC_MSGFAILUREACU;
+//				break;
+//				case COM_FRAME_IDX_FIU_VM_MSG:
+//					ubDtcIdx = DEM_DTC_IDX_DTC_MSGFAILUREFIU;
+//				break;
+//				default:break;
+			}
+
+//			if(uFrameIdx < 13)
+			{
+//				if(Cnt_InvalidDLC[uFrameIdx] > 0)
+				{
+//					--Cnt_InvalidDLC[uFrameIdx];
+				}
+//				else
+				{
+					/* Signal clearance confirmation */
+//					DEM_DtcTestStatus(ubDtcIdx, DEM_TEST_FAIL);
+				}
+			}
+		}
+	}
+}
+/*--------------------------{end RxInvalidMessage_DLC}----------------------------------*/
+
+
+/*--------------------------{DEM_CriticalSectionExit}--------------------------------------*/
+void DEM_CriticalSectionExit (u8 ebStatus)
+{
+    OSC_PARAM_UNUSED(ebStatus);
+}
+/*--------------------------{end DEM_CriticalSectionExit}----------------------------------*/
+
+/*--------------------------{DEM_CriticalSectionEntry}--------------------------------------*/
+u8 DEM_CriticalSectionEntry (void)
+{
+    return 1U;
+}
+/*--------------------------{end DEM_CriticalSectionEntry}----------------------------------*/
+
+
+/*--------------------------{DEM_StoreDtcCbk}--------------------------------------*/
+/* Deviation MISRA-1 */
+void DEM_StoreDtcCbk(tDtcLocalStatus *stDtcLocalStatus, tDtcIdx ubDtcIdx)
+{
+	/* Check inputs parameters */
+	if (NULL != stDtcLocalStatus)
+	{
+		if(ubDtcIdx == 0xFFU)								// Erase all command
+		{
+			fDTC_EraseAllRequest = 1;
+		}
+		else if(ubDtcIdx < DEM_DTC_NUMBER)	// Write one by one
+		{
+//			stSaveDTC.ubStoreReq_DTC[ubDtcIdx] = 0xA5;
+//			stSaveDTC.ubData_DTC[ubDtcIdx] = stDtcLocalStatus[ubDtcIdx].ubDtcStatusMask;
+		}
+	}
+}
+/*--------------------------{end DEM_StoreDtcCbk}----------------------------------*/
+
+/*--------------------------{DEM_IsConditionCorrect}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus DEM_IsConditionCorrect(u16 *puwLen, u8 *aubUdsData)
+{
+    tUdsStatus eStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    { 
+        OSC_PARAM_UNUSED(puwLen);
+        OSC_PARAM_UNUSED(aubUdsData);
+        eStatus = UDS_ACK;
+    }
+    else
+    {
+        eStatus = UDS_NRC_22;
+    }
+
+    return eStatus;
+}
+/*--------------------------{end DEM_IsConditionCorrect}----------------------------------*/
+
+/*--------------------------{NAMI_TestMode}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus NAMI_TestMode(u16 *puwLen, u8 *aubUdsData)
+{
+
+    OSC_PARAM_UNUSED(puwLen);
+    OSC_PARAM_UNUSED(aubUdsData);
+
+    return UDS_ACK;
+}
+/*--------------------------{end NAMI_TestMode}----------------------------------*/
+
+
+
+/*--------------------------{ERAE_ClearDTC}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus ERAE_ClearDTC(u16 *puwLen, u8 *aubUdsData)
+{
+
+    tUdsStatus eUdsStatus;
+    eUdsStatus = UDS_ACK;
+
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+			eUdsStatus = DEM_ClearDiagnosticInformation(puwLen, aubUdsData);
+    }
+    else 
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+   return eUdsStatus;
+}
+/*--------------------------{end ERAE_ClearDTC}----------------------------------*/
+
+u8 gnRxFrameFlag = COM_TRUE;
+/*--------------------------{COM_CBK_RXFRAME}--------------------------------------*/
+u8 COM_CBK_RXFRAME(tComFrameIdx uFrameIdx)
+{
+    u8 nComStatus = COM_RX_IND_CHECK_OK;
+    OSC_PARAM_UNUSED(uFrameIdx);
+    if(gnRxFrameFlag == COM_TRUE)
+    {
+	    nComStatus = COM_RX_IND_CHECK_OK;
+    }
+    else
+    {
+	    nComStatus = COM_RX_IND_CHECK_REJECT;
+    }
+    return nComStatus;
+}
+/*--------------------------{end COM_CBK_RXFRAME}----------------------------------*/
+
+/*--------------------------{ERAE_CommunicationControl}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus ERAE_CommunicationControl(u16 *puwLen, u8 *aubUdsData)
+	{
+		tUdsStatus eUdsStatus = UDS_NRC_7F;
+		OSC_PARAM_UNUSED(puwLen);
+		OSC_PARAM_UNUSED(aubUdsData);
+	
+		if ((puwLen != NULL) && (aubUdsData != NULL))
+		{
+			eUdsStatus = UDS_ACK;
+			if(!aubUdsData[1])
+			{
+				if((aubUdsData[2] == 0x01) || (aubUdsData[2] == 0x03))
+				{
+					IL_EnableEvtFrame(IL_TRUE); 					// For Tx
+					gnRxFrameFlag = COM_TRUE;							// For Rx
+					COM_Periodic(COM_PERIODIC_START);
+				}
+				else
+				{
+					eUdsStatus = UDS_NRC_31;
+				}
+			}
+			
+			else
+			{
+				if((aubUdsData[2] == 0x01) || (aubUdsData[2] == 0x03))		
+				{
+					fCommunicationOffl_Mutex = 1;
+					IL_EnableEvtFrame(IL_FALSE);					// For Tx
+					gnRxFrameFlag = COM_TRUE;							// For Rx
+					COM_Periodic(COM_PERIODIC_STOP);
+				}
+				else
+				{	
+					eUdsStatus = UDS_NRC_31;
+				}
+			}
+				*puwLen = 2;
+		}
+	
+		return eUdsStatus;
+	}
+
+
+/*--------------------------{end ERAE_CommunicationControl}----------------------------------*/
+
+
+
+/*--------------------------{ERAE_TesterPresent}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus ERAE_TesterPresent(u16 *puwLen, u8 *aubUdsData)
+{
+
+    OSC_PARAM_UNUSED(puwLen);
+    OSC_PARAM_UNUSED(aubUdsData);
+
+    return UDS_ACK;
+}
+/*--------------------------{end ERAE_TesterPresent}----------------------------------*/
+
+/*--------------------------{UDS_ControlDTCSetting}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus UDS_ControlDTCSetting(u16 *puwLen, u8 *aubUdsData)
+{
+	u32 ulDtcCode;
+	tUdsStatus eUdsStatus;
+
+
+	eUdsStatus = UDS_ACK;
+
+
+	/* input pointers are always checked in case of function takes NULL parameters */
+	if ((puwLen != NULL) && (aubUdsData != NULL))
+	{
+		/* Check if all condition to execute the request are correct*/
+		eUdsStatus = DEM_IsConditionCorrect(puwLen,aubUdsData);
+//		eUdsStatus = DEM_ControlDTCSetting(puwLen, aubUdsData);
+
+		if(UDS_ACK == eUdsStatus)
+		{
+			/* Retrieve the DTC code from UDS buffer */
+			ulDtcCode = (u32)(((u32)aubUdsData[2] << 32U) & 0xFF000000U);
+			ulDtcCode |= (u32)(((u32)aubUdsData[3] << 16U) & 0x00FF0000U);
+			ulDtcCode |= (u32)(((u32)aubUdsData[4] << 8U) & 0x0000FF00U);
+			ulDtcCode |= (u32)((u32)aubUdsData[5] & 0x000000FFU);
+
+
+			/* If all the DTC shall be locked */
+			if ((0x003201F4U == ulDtcCode) && ( 1U == (u8)(aubUdsData[1] & 0x7FU)))
+			{
+				/* start DTC detect */
+				m_aubDtcActivation = DEM_MODE_ON;
+				DEM_StartOperatingCycle();
+			}
+			/* If all the DTC shall be unlocked */
+			else if ((0x003201F4U == ulDtcCode) && ( 2U == (u8)(aubUdsData[1] & 0x7FU)))
+			{
+				/* stop DTC detect */
+				m_aubDtcActivation = DEM_MODE_OFF;
+				DEM_StopOperatingCycle();
+			}
+			else
+			{
+				/* Nothing */
+			}
+		}
+	}
+	else
+	{
+		eUdsStatus = UDS_NRC_22;
+	}
+	return eUdsStatus;
+}
+/*--------------------------{end UDS_ControlDTCSetting}----------------------------------*/
+
+/*--------------------------{PROG_EcuReset}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus PROG_EcuReset(u16 *puwLen, u8 *aubUdsData)
+{
+  OSC_PARAM_UNUSED(puwLen);
+  OSC_PARAM_UNUSED(aubUdsData);
+
+	Cnt_ResetDelay = 0;
+	ECU_Reset_Bit = 1;	
+	fECU_Reset = 1;
+	return UDS_NRC_78;
+}
+/*--------------------------{end PROG_EcuReset}----------------------------------*/
+
+/*--------------------------{PROG_Sa1Request}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus PROG_Sa1Request(u16 *puwLen, u8 *aubUdsData)
+{
+  tUdsStatus eStatus;
+
+  eStatus = UDS_ACK;
+
+	if(m_eSecurityState == PROG_SECURITY_STATE_UNLOCK)
+	{
+    /* Fill the answer */
+    aubUdsData[2] = (u8) 0x00;					// For requirement chapter 4.1.1 of Diagnostic Test case with CANoeDiVa(Gabriel)
+    aubUdsData[3] = (u8) 0x00;
+    aubUdsData[4] = (u8) 0x00;
+    aubUdsData[5] = (u8) 0x00;
+    *puwLen = 6;
+  }
+  else
+  {
+      (void) PROG_Sa1Managment(puwLen, aubUdsData);
+      m_ubSecurityAccessState = PROG_SA_SEED_SENT;
+  }
+
+  return eStatus;
+}
+/*--------------------------{end PROG_Sa1Request}----------------------------------*/
+
+/*--------------------------{PROG_Sa2Request}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus PROG_Sa2Request(u16 *puwLen, u8 *aubUdsData)
+{
+	tUdsStatus eStatus;
+	
+	eStatus = UDS_ACK;
+
+	/* Implements : 000-07-D028-D-91601-1
+	 if the SeedSent flag is true, start the AS tempo else rturn a NACK_24,
+	 recover the key received */
+	if (PROG_SA_SEED_SENT == m_ubSecurityAccessState)
+	{
+			eStatus = PROG_Sa2Managment(puwLen, aubUdsData);
+
+			if (UDS_ACK == eStatus)
+			{
+					/* Unlock ECU if key is correct */
+					m_eSecurityState = PROG_SECURITY_STATE_UNLOCK;
+			}
+	}
+	else
+	{
+			eStatus = UDS_NRC_24;
+	}
+
+	return eStatus;
+}
+/*--------------------------{end PROG_Sa2Request}----------------------------------*/
+
+/*--------------------------{RDBI_PwrSupplyVolt}--------------------------------------*/
+#define	VoltageScaleFactor		0.1
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_PwrSupplyVolt(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+				aubUdsData[3] = (u8)(BoardState.BatteryVolt / VoltageScaleFactor);
+				
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_PwrSupplyVolt}----------------------------------*/
+
+/*--------------------------{RDBI_VehicleSpeed}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_VehicleSpeed(u16 *puwLen, u8 *aubUdsData)
+{
+	float VehSpdVal;
+	uword Temp_VehSpdVal;
+	
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 5U;
+//				aubUdsData[3] = (u8)(SSMInput.SSMInVehicleSpeed>>8);
+//				aubUdsData[4] = (u8)SSMInput.SSMInVehicleSpeed;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_VehicleSpeed}----------------------------------*/
+
+/*--------------------------{RDBI_EngineStatus}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EngineStatus(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = SSMInput.SSMInCoEng_st;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EngineStatus}----------------------------------*/
+
+/*--------------------------{RDBI_TransmissionStaus}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_TransmissionStaus(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = SSMInput.SSMInGear;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_TransmissionStaus}----------------------------------*/
+
+/*--------------------------{RDBI_AppliedForce}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_AppliedForce(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_AppliedForceSt;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_AppliedForce}----------------------------------*/
+
+/*--------------------------{RDBI_AudibleChimeReq}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_AudibleChimeReq(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_AudibleChimeReq;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_AudibleChimeReq}----------------------------------*/
+
+/*--------------------------{RDBI_BreakLightReq}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_BreakLightReq(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_BrakeLightReq;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_BreakLightReq}----------------------------------*/
+
+/*--------------------------{RDBI_SwitchCurrentStatus}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_SwitchCurrentStatus(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_CurrEPBSwSt;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_SwitchCurrentStatus}----------------------------------*/
+
+/*--------------------------{RDBI_CurrentParkBreakStatus}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_CurrentParkBreakStatus(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_CurrParkBrakeSt;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_CurrentParkBreakStatus}----------------------------------*/
+
+/*--------------------------{RDBI_DyEmrBrkReq}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_DyEmrBrkReq(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_DynamicEmergencyApply;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_DyEmrBrkReq}----------------------------------*/
+
+/*--------------------------{RDBI_EpbFailureStatus}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbFailureStatus(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_FailureSts;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbFailureStatus}----------------------------------*/
+
+/*--------------------------{RDBI_EpbStatusIndicationReq}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbStatusIndicationReq(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_StatusIndReq;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbStatusIndicationReq}----------------------------------*/
+
+/*--------------------------{RDBI_EpbTargetDeceleration}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbTargetDeceleration(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//				aubUdsData[3] = IOCBI_EpbStatus.SSMOutputCAN.EPB_TargetDecel;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbTargetDeceleration}----------------------------------*/
+
+/*--------------------------{RDBI_ReleaseSwRowValue}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_ReleaseSwRowValue(u16 *puwLen, u8 *aubUdsData)
+{
+	uword AD_Value;
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 5U;
+				AD_Value = ADC_ReleaseSwitch();
+				 aubUdsData[3] = (u8)AD_Value>>8;
+				 aubUdsData[4] = (u8)AD_Value;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_ReleaseSwRowValue}----------------------------------*/
+
+/*--------------------------{RDBI_NeutralSwRowValue}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_NeutralSwRowValue(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+		uword AD_Value;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 5U;
+				AD_Value = ADC_NeutralSwitch();
+				aubUdsData[3] = (u8)AD_Value>>8;
+			 	aubUdsData[4] = (u8)AD_Value;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_NeutralSwRowValue}----------------------------------*/
+
+/*--------------------------{RDBI_ApplySwRowValue}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_ApplySwRowValue(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+		uword AD_Value;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 5U;
+				AD_Value = ADC_ApplySwitch();
+				aubUdsData[3] = (u8)AD_Value>>8;
+			 	aubUdsData[4] = (u8)AD_Value;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_ApplySwRowValue}----------------------------------*/
+
+/*--------------------------{RDBI_EpbSwitchIndicator}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbSwitchIndicator(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+				if(fEpbSwitchIndLedA && fEpbSwitchIndLedB)
+				{
+					aubUdsData[3] = 1;
+				}
+				else
+				{
+					aubUdsData[3] = 0;
+				}
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbSwitchIndicator}----------------------------------*/
+
+/*--------------------------{RDBI_MotorOutput}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_MotorOutput(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+//				if(LogicResult.EpbMcuActnCmdSet.Epb_MtrCmd == 1)
+				{
+					aubUdsData[3] = 1;
+				}
+//				else if(LogicResult.EpbMcuActnCmdSet.Epb_MtrCmd == 2)
+				{
+					aubUdsData[3] = 2;
+				}
+//				else
+				{
+					aubUdsData[3] = 0;
+				}
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_MotorOutput}----------------------------------*/
+
+/*--------------------------{RDBI_HallSensor}--------------------------------------*/
+/* Deviation MISRA-1 */
+ubyte	ubRDBI_HallSensor = 0;							// RDBI Hall Sensor Status buffer for Diagnostic
+tUdsStatus RDBI_HallSensor(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				aubUdsData[3] = ubRDBI_HallSensor;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_HallSensor}----------------------------------*/
+
+/*--------------------------{RDBI_ForceSensorStatus}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_ForceSensorStatus(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+//				aubUdsData[3] = Diag_Force;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_ForceSensorStatus}----------------------------------*/
+
+/*--------------------------{RDBI_MotorStatus}--------------------------------------*/
+/* Deviation MISRA-1 */
+ubyte	ubRDBI_MotorStatus = 0;					// RDBI motor status buffer for diagnostics
+tUdsStatus RDBI_MotorStatus(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				aubUdsData[3] = ubRDBI_MotorStatus;
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_MotorStatus}----------------------------------*/
+
+/*--------------------------{RDBI_ForceSensorValue}--------------------------------------*/
+/* Deviation MISRA-1 */
+#define	ForceScaleFactor		(20475/5120)
+#define	VoltScaleFactor		(5/1024)
+
+
+/*--------------------------{RDBI_ActiveDiagSession}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_ActiveDiagSession(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 4U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				aubUdsData[3] = UDS_GetCurrentSession();
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_ActiveDiagSession}----------------------------------*/
+
+/*--------------------------{RDBI_EpbSparePartNum}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbSparePartNum(u16 *puwLen, u8 *aubUdsData)
+{
+ubyte i;
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 30U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				for(i = 0;i<28;i++)
+				{
+//					aubUdsData[3+i] = SparePartNum[i];
+				}
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbSparePartNum}----------------------------------*/
+
+/*--------------------------{RDBI_EpbSerialNum}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbSerialNum(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 3U;
+        OSC_PARAM_UNUSED(aubUdsData);
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbSerialNum}----------------------------------*/
+
+/*--------------------------{RDBI_VehicleVinNum}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_VehicleVinNum(u16 *puwLen, u8 *aubUdsData)
+{
+ubyte	i;
+
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 20U;
+
+				for(i=0;i<18;i++)
+				{
+//        	aubUdsData[3+i] = Rx_VIN[i];
+				}
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_VehicleVinNum}----------------------------------*/
+
+/*--------------------------{RDBI_EpbHardwareNumNami}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbHardwareNumNami(u16 *puwLen, u8 *aubUdsData)
+{
+ubyte	i;
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 30U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				for(i = 0;i<28;i++)
+				{
+//					aubUdsData[3+i] = NamiHwNum[i];
+				}
+				eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbHardwareNumNami}----------------------------------*/
+
+/*--------------------------{RDBI_EpbHardwareNumErae}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbHardwareNumErae(u16 *puwLen, u8 *aubUdsData)
+{
+ubyte i;
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 10U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				for(i=0;i<8;i++)
+				{
+//					aubUdsData[3+i] = EPB_HwNum[i];
+				}
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbHardwareNumErae}----------------------------------*/
+
+/*--------------------------{RDBI_EpbHardwareVersionNum}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbHardwareVersionNum(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 5U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+//				aubUdsData[3] = EPB_HwVerNum[0];
+//				aubUdsData[4] = EPB_HwVerNum[1];
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbHardwareVersionNum}----------------------------------*/
+
+/*--------------------------{RDBI_EpbSoftwareNum}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbSoftwareNum(u16 *puwLen, u8 *aubUdsData)
+{
+ubyte i;
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 10U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				for(i=0;i<8;i++)
+				{
+//					aubUdsData[3+i] = EPB_SwNum[i];
+				}
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbSoftwareNum}----------------------------------*/
+
+/*--------------------------{RDBI_EpbSoftwareVersionNum}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbSoftwareVersionNum(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 5U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+//				aubUdsData[3] = EPB_SwVerNum[0];
+//				aubUdsData[4] = EPB_SwVerNum[1];
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbSoftwareVersionNum}----------------------------------*/
+
+/*--------------------------{RDBI_EpbBootSoftware_ID}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbBootSoftware_ID(u16 *puwLen, u8 *aubUdsData)
+{
+ubyte i;
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 10U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				for(i=0;i<8;i++)
+				{
+//					aubUdsData[3+i] = BootSw_ID[i];
+				}
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbBootSoftware_ID}----------------------------------*/
+
+/*--------------------------{RDBI_EpbApplicationData_ID}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_EpbApplicationData_ID(u16 *puwLen, u8 *aubUdsData)
+{
+ubyte i;
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        *puwLen = 10U;
+//        OSC_PARAM_UNUSED(aubUdsData);
+				for(i=0;i<8;i++)
+				{
+//					aubUdsData[3+i] = AppSw_ID[i];
+				}
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_EpbApplicationData_ID}----------------------------------*/
+
+ubyte	ubFingerprint[12];
+/*--------------------------{RDBI_FingerPrint}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus RDBI_FingerPrint(u16 *puwLen, u8 *aubUdsData)
+{
+	ubyte i,x,temp;
+	uword	WriteData;
+  /* Define pointer to length in callback */
+  /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+  /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+  
+  tUdsStatus eUdsStatus;
+  
+  /* input pointers are always checked in case of function takes NULL parameters */
+  if ((puwLen != NULL) && (aubUdsData != NULL))
+  {
+    *puwLen = 15U;
+		for(x=0,i=0;i<12;i++)
+		{
+			temp = i % 2;
+			if(!temp)
+			{
+				WriteData = SPI_EEP_Read_X16((Fingerprint_AddOffset + x));
+				ubFingerprint[i] = (ubyte)(WriteData >> 8);
+				ubFingerprint[i+1] = (ubyte)WriteData;
+				++x;
+			}
+
+			aubUdsData[3+i] = ubFingerprint[i];
+		}
+		eUdsStatus = UDS_ACK;
+  }
+  else
+  {
+      eUdsStatus = UDS_NRC_13;					// Incorrect Message Length or Invalid Format
+  }
+
+    return eUdsStatus;
+}
+/*--------------------------{end RDBI_FingerPrint}----------------------------------*/
+
+/*--------------------------{WDBI_WriteFingerPrint}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus WDBI_WriteFingerPrint(u16 *puwLen, u8 *aubUdsData)
+{
+	ubyte i,x,temp;
+	uword WriteData;
+
+  /* Define pointer to length in callback */
+  /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+  /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+  
+  tUdsStatus eUdsStatus;
+  
+  /* input pointers are always checked in case of function takes NULL parameters */
+  if ((puwLen != NULL) && (aubUdsData != NULL))
+  {
+  	if(m_eSecurityState == PROG_SECURITY_STATE_UNLOCK)
+  	{
+      *puwLen = 3U;
+
+			for(i=0,x=0;i<12;i++)
+			{
+				ubFingerprint[i] = aubUdsData[3+i];
+			}
+
+			fFingerPrintWrote = 1;
+			eUdsStatus = UDS_NRC_78;
+  	}
+		else
+		{
+			eUdsStatus = UDS_NRC_7F;					// Security Acces Denied
+		}
+  }
+  else
+  {
+      eUdsStatus = UDS_NRC_13;					// Incorrect Message Length or Invalid Format
+  }
+	
+	return eUdsStatus;
+}
+/*--------------------------{end WDBI_WriteFingerPrint}----------------------------------*/
+
+/*--------------------------{IOCBI_AudibleChimeReq}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus IOCBI_AudibleChimeReq(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+
+		eUdsStatus = UDS_ACK;
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+    	if(m_eSecurityState == PROG_SECURITY_STATE_UNLOCK)
+    	{
+				*puwLen = 5U;
+	    	if(aubUdsData[3] == 0)
+	    	{
+					IOCBI_AudibleChimeReq_Bit = 1;
+					if(IOCBI_AudibleChimeControl_Bit)
+					{
+						IOCBI_AudibleChimeControl_Bit = 0;
+						aubUdsData[4] = 0;
+					}
+					else
+					{
+						IOCBI_AudibleChimeControl_Bit = 1;
+						aubUdsData[4] = 1;
+					}
+	    	}
+				else if(aubUdsData[3] == 3)
+				{
+					IOCBI_AudibleChimeReq_Bit = 1;
+					
+					if(aubUdsData[4] == 1)
+					{
+						IOCBI_AudibleChimeControl_Bit = 1;
+					}
+					else if(aubUdsData[4] == 0)
+					{
+						IOCBI_AudibleChimeControl_Bit = 0;
+					}
+					else
+					{
+						IOCBI_AudibleChimeReq_Bit = 0;
+						eUdsStatus = UDS_NRC_13;				// Incorrect Message Length or Invalid Format
+					}
+				}
+				else
+				{
+					IOCBI_AudibleChimeReq_Bit = 0;
+					eUdsStatus = UDS_NRC_13;				// Incorrect Message Length or Invalid Format
+				}
+    	}
+			else
+			{
+				eUdsStatus = UDS_NRC_33;					// Security Acces Denied
+			}
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_13;					// Incorrect Message Length or Invalid Format
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end IOCBI_AudibleChimeReq}----------------------------------*/
+
+/*--------------------------{IOCBI_BreakLightReq}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus IOCBI_BreakLightReq(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    eUdsStatus = UDS_ACK;
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+			if(m_eSecurityState == PROG_SECURITY_STATE_UNLOCK)
+    	{
+				*puwLen = 5U;
+				if(aubUdsData[3] == 0)
+				{																					// Return Control
+					IOCBI_BrakLightReq_Bit = 1;
+					if(IOCBI_BreakLightReqControl_Bit)
+					{
+						aubUdsData[4] = 0;
+						IOCBI_BreakLightReqControl_Bit = 0;
+					}
+					else
+					{
+						IOCBI_BreakLightReqControl_Bit = 1;
+						aubUdsData[4] = 1;
+					}
+	    	}
+				else if(aubUdsData[3] == 3)
+				{																					// request Control
+					IOCBI_BrakLightReq_Bit = 1;
+					
+					if(aubUdsData[4] == 1)
+					{
+						IOCBI_BreakLightReqControl_Bit = 1;
+					}
+					else
+					{
+						IOCBI_BreakLightReqControl_Bit = 0;
+					}
+				}
+				else
+				{
+					IOCBI_BrakLightReq_Bit = 0;
+					eUdsStatus = UDS_NRC_22;				// Conditions not correct
+				}
+			}
+			else
+			{
+				eUdsStatus = UDS_NRC_33;					// Security Acces Denied
+			}
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_13;					// Incorrect Message Length or Invalid Format
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end IOCBI_BreakLightReq}----------------------------------*/
+
+/*--------------------------{IOCBI_EpbSwitchIndicator}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus IOCBI_EpbSwitchIndicator(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    eUdsStatus = UDS_ACK;
+		
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+			if(m_eSecurityState == PROG_SECURITY_STATE_UNLOCK)
+    	{
+				*puwLen = 5U;
+				if(aubUdsData[3] == 0)
+				{
+					IOCBI_EpbSwitchIndicator_Bit = 1;
+
+					if(IOCBI_EpbSwitchIndControl_Bit)
+					{
+						aubUdsData[4] = 0;
+						IOCBI_EpbSwitchIndControl_Bit = 0;
+					}
+					else
+					{
+						aubUdsData[4] = 1;
+						IOCBI_EpbSwitchIndControl_Bit = 1;
+					}
+	    	}
+				else if(aubUdsData[3] == 3)
+				{
+					IOCBI_EpbSwitchIndicator_Bit = 1;
+
+					if(aubUdsData[4] == 1)
+					{
+						IOCBI_EpbSwitchIndControl_Bit = 1;
+					}
+					else if(aubUdsData[4] == 0)
+					{
+						IOCBI_EpbSwitchIndControl_Bit = 0;
+						aubUdsData[4] = 0;
+					}
+					else
+					{
+						IOCBI_EpbSwitchIndControl_Bit = 0;
+						eUdsStatus = UDS_NRC_22;				// Conditions not correct
+					}
+				}
+				else
+				{
+					IOCBI_BrakLightReq_Bit = 0;
+					eUdsStatus = UDS_NRC_22;				// Conditions not correct
+				}
+			}
+			else
+			{
+				eUdsStatus = UDS_NRC_33;					// Security Acces Denied
+			}
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_13;					// Incorrect Message Length or Invalid Format
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end IOCBI_EpbSwitchIndicator}----------------------------------*/
+
+/*--------------------------{IOCBI_MotorOutput}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus IOCBI_MotorOutput(u16 *puwLen, u8 *aubUdsData)
+{
+    /* Define pointer to length in callback */
+    /* If nothing is implemented in callback, length returned is 0 and no response is sent */
+    /* By default the callback length shall be 3 (service 1 and DID 2 ) */
+    
+    tUdsStatus eUdsStatus;
+    eUdsStatus = UDS_ACK;
+		
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+			if(m_eSecurityState == PROG_SECURITY_STATE_UNLOCK)
+    	{
+				*puwLen = 5U;
+				if(aubUdsData[3] == 0)
+				{
+					IOCBI_MotorOutput_Bit = 1;
+
+					if(ubMotorOutput_Buf == 1)
+					{
+						aubUdsData[4] = 2;
+						ubMotorOutput_Buf = 2;
+					}
+					else if(ubMotorOutput_Buf == 2)
+					{
+						aubUdsData[4] = 1;
+						ubMotorOutput_Buf = 1;
+					}
+	    	}
+				else if(aubUdsData[3] == 3)
+				{
+					IOCBI_MotorOutput_Bit = 1;
+
+					if(aubUdsData[4] < 3)
+					{
+						ubMotorOutput_Buf = aubUdsData[4];							// Stop = 0, Apply = 1, Release = 2
+					}
+					else
+					{
+						IOCBI_MotorOutput_Bit = 0;
+						eUdsStatus = UDS_NRC_22;				// Conditions not correct
+					}
+				}
+				else
+				{
+					IOCBI_BrakLightReq_Bit = 0;
+					eUdsStatus = UDS_NRC_22;				// Conditions not correct
+				}
+			}
+			else
+			{
+				eUdsStatus = UDS_NRC_33;					// Security Acces Denied
+			}
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_13;					// Incorrect Message Length or Invalid Format
+    }
+
+    return eUdsStatus;
+}
+/*--------------------------{end IOCBI_MotorOutput}----------------------------------*/
+
+/*--------------------------{PostProgMemoryCheck}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus PostProgMemoryCheck(u16 *puwLen, u8 *aubUdsData)
+{
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        OSC_PARAM_UNUSED(puwLen);
+        OSC_PARAM_UNUSED(aubUdsData);
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+    return eUdsStatus;
+}
+/*--------------------------{end PostProgMemoryCheck}----------------------------------*/
+
+/*--------------------------{VinLearn}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus VinLearn(u16 *puwLen, u8 *aubUdsData)
+{
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+		if(m_eSecurityState == PROG_SECURITY_STATE_UNLOCK)
+		{
+	    if ((puwLen != NULL) && (aubUdsData != NULL))
+	    {
+	        fUDS_VIN_Lean = 1;
+					eUdsStatus = UDS_NRC_78;
+//					VIN_udsData = aubUdsData;
+	    }
+	    else
+	    {
+	        eUdsStatus = UDS_NRC_22;
+	    }
+		}
+		else
+		{
+			eUdsStatus = UDS_NRC_33;					// Security Acces Denied
+		}
+    return eUdsStatus;
+}
+/*--------------------------{end VinLearn}----------------------------------*/
+
+
+/*--------------------------{ProductForceLevelTest}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus ProductForceLevelTest(u16 *puwLen, u8 *aubUdsData)
+{
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+		if(m_eSecurityState == PROG_SECURITY_STATE_UNLOCK)
+		{
+	    if ((puwLen != NULL) && (aubUdsData != NULL))
+	    {
+//				SSMInput.SSMInRollerbenchRoutine = (uint16_T)aubUdsData[2];
+
+				*puwLen = 0x04U;
+	      eUdsStatus = UDS_ACK;
+	    }
+	    else
+	    {
+	        eUdsStatus = UDS_NRC_22;
+	    }
+		}
+		else
+		{
+			eUdsStatus = UDS_NRC_33;					// Security Acces Denied
+		}
+    return eUdsStatus;
+}
+/*--------------------------{end ProductForceLevelTest}----------------------------------*/
+
+
+/*--------------------------{EraeMemoryTest}--------------------------------------*/
+/* Deviation MISRA-1 */
+
+
+tUdsStatus EraeMemoryTest(u16 *puwLen, u8 *aubUdsData)
+{
+	tUdsStatus eUdsStatus = UDS_ACK;
+
+	BootWriteAdd[0] = aubUdsData[9];
+	BootWriteAdd[1] = aubUdsData[10];
+	BootWriteAdd[2] = aubUdsData[11];
+	BootWriteAdd[3] = aubUdsData[12];
+
+	eUdsStatus = UDS_NRC_78;
+
+	if(((aubUdsData[5] == 0x00) && (aubUdsData[6] == 0x01) && (aubUdsData[7] == 0x80) && (aubUdsData[8] == 0x00)))
+	{
+		eBootFlag = DOWNLOAD_REQUESTED;
+		Cnt_ResetDelay = 0;
+		ECU_Reset_Bit = 1;
+		fBootWriteRequest = 1;
+	}
+	
+	else
+	{
+		eUdsStatus = UDS_NRC_13;
+	}
+	
+	return eUdsStatus;
+}
+
+
+/*--------------------------{end EraeMemoryTest}----------------------------------*/
+
+/*--------------------------{CheckProgramingDependendcy}--------------------------------------*/
+/* Deviation MISRA-1 */
+tUdsStatus CheckProgramingDependency(u16 *puwLen, u8 *aubUdsData)
+{
+    tUdsStatus eUdsStatus;
+    
+    /* input pointers are always checked in case of function takes NULL parameters */
+    if ((puwLen != NULL) && (aubUdsData != NULL))
+    {
+        OSC_PARAM_UNUSED(puwLen);
+        OSC_PARAM_UNUSED(aubUdsData);
+        eUdsStatus = UDS_ACK;
+    }
+    else
+    {
+        eUdsStatus = UDS_NRC_22;
+    }
+    return eUdsStatus;
+}
+/*--------------------------{end CheckProgramingDependendcy}----------------------------------*/
+

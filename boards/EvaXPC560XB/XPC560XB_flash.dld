@@ -1,0 +1,181 @@
+/***************************************************
+ * Copyright 1998-2014 Elektrobit Automotive GmbH
+ * All rights exclusively reserved for Elektrobit Automotive GmbH,
+ * unless expressly agreed to otherwise.
+ *
+ * $Id: XPC560XB_flash.dld 17602 2014-02-03 12:09:35Z tojo2507 $
+ *
+ **************************************************/
+
+MEMORY
+{
+    /******************************************************************
+    ********************** FLASH **************************************/
+    /*
+    * !LINKSTO OsekCore.Platforms.Linker.007, 1
+    */
+    reset               : org = 0x00018000, len = 0x01000
+
+
+
+    /**********************************************************/
+    /*Section needed to store required data to initialize the RAL
+    * ex: _copy_rom_info
+    * this variable is generated automatically by the compiler*/
+    init                 : org = 0x00019000, len = 0x01000
+    /*********************************************************/
+
+    /*
+    * !LINKSTO OsekCore.Platforms.Linker.006, 1
+    */
+    exctab               : org = 0x0001A000, len = 0x00800
+    intctab              : org = 0x0001A800, len = 0x00800
+
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.002, 1
+    */
+    mtext                : org = 0x00020000, len = 0x5E000
+
+
+    /******************************************************************
+    ********************** RAM** **************************************/    
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.009, 1
+    * !LINKSTO OsekCore.Platforms.Startup.012, 1
+    */
+    mkernstack           : org = 0x40000000, len = 0x01000
+    mkernheap            : org = 0x40001000, len = 0x00E00
+
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.008, 1
+    */
+    mdataflash           : org = 0x40001E00, len = 0x00100
+
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.003, 1
+    */
+    mdata                : org = 0x40001F00, len = 0x06000
+
+    /* 
+    * memory RAM section for Flash apis
+    mflashapiram         : org = 0x40002F00, len = 0x00800
+    */     
+
+
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.005, 1
+    */
+    section_noinit       : org = 0x40007F00, len = 0x00100  /* 16 KB SRAM */
+
+}
+
+SECTIONS
+{
+    .reset : { *(.reset) *(.reset_code) } > reset
+
+    .intctab :
+    {
+        __INTC_TABLE_START = .;
+        *(.intctab)
+        __INTC_TABLE_END = .;
+    } > intctab
+
+    .exctab :
+    {
+        __EXCEPTION_TABLE_START = .;
+        *(.exctab)
+        __EXCEPTION_TABLE_END = .;
+    } > exctab
+
+    GROUP ALIGN(4) :
+    {
+        .sdata2 (TEXT) : {}   /* small CONST area for some targets */
+
+        .text (TEXT) :
+        {
+            *(.text_vle)
+            *(.init)
+            *(.fini)
+        }
+     
+        .sdata2 (TEXT) : {} =0xff   /* small CONST area for some targets */
+
+        .fls_driver ALIGN(4) : {} /* Function executed from RAM need to be aligned on 4 bytes imperatively. */
+        __FLS_DRV_ST = . - SIZEOF(.fls_driver); 
+        __FLS_DRV_SIZE = . - __FLS_DRV_ST;
+
+
+        /* constructor and destructor function ptrs                 */
+        .ctors ALIGN(4) : { ctordtor.o(.ctors)}
+        .dtors ALIGN(4) : { ctordtor.o(.dtors)}
+        __DATA_ROM = .;
+    } > mtext
+
+    GROUP  ALIGN(4):
+    {
+        __DATA_RAM = .;
+
+        /* With the LOAD specification, the next command will
+         * reserve space for the .data section at the beginning of
+         * "ram" (the "logical" address), but actually place the
+         * data in the image at the end of the .text section as
+         * defined by __DATA_ROM in the GROUP above (the "physical"
+         * address).
+         */
+        .data (DATA) LOAD(__DATA_ROM) : {}
+
+
+        /* .sdata is the "small data area" for some targets.        */
+        .sdata (DATA) LOAD(__DATA_ROM+SIZEOF(.data)) :
+        {
+            *(.sdata)
+        }
+
+        __DATA_END = .;
+
+        __BSS_START = .;
+        .sbss (BSS) : {}
+        .bss  (BSS) : {}
+        .tibss (BSS) : {}
+        __BSS_END = .;
+
+        __HEAP_START = .;
+    } > mdata
+
+    .noinit ALIGN(32) (BSS): {} > section_noinit /* RAM no init */
+    
+    __IVPR          = __EXCEPTION_TABLE_START;
+    _EXCEPTION_TABLE_START = __EXCEPTION_TABLE_START;
+    _INTC_TABLE_START = __INTC_TABLE_START;
+    __SP_INIT       = ADDR(mkernstack) + SIZEOF(mkernstack);
+    __SP_END        = ADDR(mkernstack);
+    _SP_INIT_       = __SP_INIT;
+    
+    _INIT_          = __DATA_ROM;
+    _DATA_START_    = __DATA_RAM;
+    _DATA_END_      = __DATA_END; /* This prevent the copy loop to copy anything */
+
+    /* No Initialization SRAM section */
+    __NOINIT_START  = ADDR(section_noinit);
+    __NOINIT_END     = ADDR(section_noinit) + SIZEOF(section_noinit);
+    __NOINIT_SIZE   = SIZEOF(section_noinit);
+    
+    _BSS_START_     = __BSS_START;
+    _BSS_END_       = __BSS_END;
+
+    ___SP_INIT      = __SP_INIT;
+    ___SP_END       = __SP_END;
+
+    ___DATA_ROM     = __DATA_ROM;
+
+    /* RAM to be initialized if the complete RAM sections WITHOUT RamNoInit*/
+    /*	__FLASH_API_RAM_BASE = ADDR(mflashapiram);   */
+	
+	/* SSD Flash drivers are copied into this area in RAM and executed */
+    __GLBL_RAM_START    = ADDR(mkernstack);
+    __GLBL_RAM_SIZE     = SIZEOF(mkernstack) + SIZEOF(mdataflash) + SIZEOF(mdata);
+    __GLBL_RAM_END      = __GLBL_RAM_START + __GLBL_RAM_SIZE;
+
+    __GLBL_TEXT_START   = ADDR(mtext);
+
+}

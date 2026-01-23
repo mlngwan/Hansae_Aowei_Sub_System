@@ -1,0 +1,201 @@
+;
+; Example script for programming of MPC560xB/SPC560Bx (Bolero) internal flash.
+;
+; Based on CMM script jpc560x.cmm from Lauterbach
+;
+entry &elffile
+if "&elffile"==""
+   &elffile="C:\EB\tresos\workspace\NAMI_DBC09Sep2016\output\bin\*.elf"
+
+
+LOCAL &flashbase &shadowbase &rambase &flashsize
+LOCAL &flashdriver &multiflashbanks
+&flashbase=0x00000000
+&shadowbase=0x00200000
+&rambase=0x40000000
+&flashsize=0x000000000
+&flashdriver="tbd.bin"
+&multiflashbanks=0
+
+LOCAL &DualPort
+IF VERSION.BUILD.BASE()>=43441.
+  &DualPort="/DualPort"
+
+;========================================================================
+; CPU setup
+
+SYStem.RESet
+SYStem.BdmClock 4.0MHz
+SYStem.CPU MPC55XX
+SYStem.DETECT.CPU
+SYStem.Option.WATCHDOG OFF
+SYStem.Option DUALPORT ON
+SYStem.Option.LPMDebug ACTIVE
+SYStem.Up
+
+; repeat CPU detection to ensure that the debugger 
+; can read from MIDR register for detection
+SYStem.DETECT.CPU
+SYStem.Up
+
+
+; protect from accessing unimplemented memory (open Data.List/Dump windows)
+MAP.DenyAccess 0x20000000--0x3FFFFFFF
+
+;========================================================================
+; Flash declaration
+
+IF (CPU()=="SPC560D30"||CPU()=="MPC5601D")        ; Bolero128k (type Bolero256k)
+(
+  &flashsize=0x00020000
+  &flashdriver="c90fl560x256k.bin"
+  SYStem.MemAccess.Denied
+  &DualPort=""
+)
+ELSE IF (CPU()=="SPC560D40"||CPU()=="MPC5602D")   ; Bolero256k
+(
+  &flashsize=0x00040000
+  &flashdriver="c90fl560x256k.bin"
+  SYStem.MemAccess.Denied
+  &DualPort=""
+)
+ELSE IF (CPU()=="SPC560B40")||(CPU()=="MPC5602B")||(CPU()=="SPC560C40")||(CPU()=="MPC5602C") ; Bolero256k (type Bolero512k)
+(
+  &flashsize=0x00040000
+  &flashdriver="c90lc560x.bin"
+)
+ELSE IF (CPU()=="SPC560B44")||(CPU()=="MPC5603B")||(CPU()=="SPC560C44")||(CPU()=="MPC5603C") ; Bolero384k (type Bolero512k)
+(
+  &flashsize=0x00060000
+  &flashdriver="c90lc560x.bin"
+)
+ELSE IF (CPU()=="SPC560B50")||(CPU()=="MPC5604B")||(CPU()=="SPC560C50")||(CPU()=="MPC5604C") ; Bolero512k
+(
+  &flashsize=0x00080000
+  &multiflashbanks=1
+  &flashdriver="c90lc560x.bin"
+)
+ELSE IF (CPU()=="SPC560B54")||(CPU()=="MPC5605B") ; Bolero768K (type Bolero1.5M)
+(
+  &flashsize=0x000C0000
+  &flashdriver="c90fl5607b.bin"
+)
+ELSE IF (CPU()=="SPC560B60")||(CPU()=="MPC5606B") ; Bolero1M (type Bolero1.5M)
+(
+  &flashsize=0x00100000
+  &flashdriver="c90fl5607b.bin"
+)
+ELSE IF (CPU()=="SPC560B64")||(CPU()=="MPC5607B") ; Bolero1.5M
+(
+  &flashsize=0x00180000
+  &flashdriver="c90fl5607b.bin"
+)
+
+
+; initialize internal SRAM
+Data.Set EA:0x40000000--0x40003fff %Quad 0
+
+FLASH.RESet
+
+; Flash bank 0
+FLASH.Create 1. (&flashbase+0x00000000)++0x07fff TARGET Quad 0. ; L0
+FLASH.Create 1. (&flashbase+0x00008000)++0x03fff TARGET Quad 1. ; L1 
+FLASH.Create 1. (&flashbase+0x0000c000)++0x03fff TARGET Quad 2. ; L2 
+FLASH.Create 1. (&flashbase+0x00010000)++0x07fff TARGET Quad 3. ; L3
+FLASH.Create 1. (&flashbase+0x00018000)++0x07fff TARGET Quad 4. ; L4
+IF &flashsize>0x00020000
+(
+  FLASH.Create 1. (&flashbase+0x00020000)++0x1ffff TARGET Quad 5. ; L5
+)
+
+IF &flashsize>0x00040000
+(
+  FLASH.Create 2. (&flashbase+0x00040000)++0x1ffff TARGET Quad 0. ; M0
+)
+IF &flashsize>0x00060000
+(
+  FLASH.Create 2. (&flashbase+0x00060000)++0x1ffff TARGET Quad 1. ; M1
+)
+
+IF &flashsize>0x00080000
+(
+  IF &multiflashbanks==1
+  (
+    ; Flash bank 1
+    FLASH.Create 3. (&flashbase+0x00080000+0x00000000)++0x07fff TARGET Quad 0. ; L0
+    FLASH.Create 3. (&flashbase+0x00080000+0x00008000)++0x03fff TARGET Quad 1. ; L1 
+    FLASH.Create 3. (&flashbase+0x00080000+0x0000c000)++0x03fff TARGET Quad 2. ; L2 
+    FLASH.Create 3. (&flashbase+0x00080000+0x00010000)++0x07fff TARGET Quad 3. ; L3
+    FLASH.Create 3. (&flashbase+0x00080000+0x00018000)++0x07fff TARGET Quad 4. ; L4
+    FLASH.Create 3. (&flashbase+0x00080000+0x00020000)++0x1ffff TARGET Quad 5. ; L5
+    
+    FLASH.Create 4. (&flashbase+0x00080000+0x00040000)++0x1ffff TARGET Quad 0. ; M0
+    FLASH.Create 4. (&flashbase+0x00080000+0x00060000)++0x1ffff TARGET Quad 1. ; M1
+  )
+  ELSE
+  (
+    &flashaddr=&flashbase+0x00080000
+    &Hx=0.
+    WHILE &flashaddr<(&flashbase+&flashsize)
+    (
+      FLASH.Create 3. &flashaddr++0x1ffff TARGET Quad &Hx ; H0..H11
+      &flashaddr=&flashaddr+0x20000
+      &Hx=&Hx+1.
+    )
+  )
+)
+
+; Shadow row
+FLASH.Create 9. (&shadowbase+0x00000000)++0x3fff NOP Quad
+
+; Data flash
+FLASH.Create 10. (&flashbase+0x00800000)++0x3fff TARGET Quad 0.
+FLASH.Create 10. (&flashbase+0x00804000)++0x3fff TARGET Quad 1.
+FLASH.Create 10. (&flashbase+0x00808000)++0x3fff TARGET Quad 2.
+FLASH.Create 10. (&flashbase+0x0080c000)++0x3fff TARGET Quad 3.
+
+FLASH.TARGET E:&rambase E:&rambase+0x2000 0x1000 ~~/demo/powerpc/flash/quad/&flashdriver /STACKSIZE 0x0200 &DualPort
+
+;========================================================================
+; Flash programming example
+;
+; Flash programming speed is about three times faster when memory class E:
+; is used for data buffer (DUALPORT memory access). For DUALPORT access it
+; is required to setup MemAccess NEXUS for both, NEXUS and JTAG debugger. 
+
+FLASH.ReProgram ALL /Erase
+Data.LOAD.elf "&elffile" E:&flashbase++(&flashsize-1)  /GLOBTYPES
+
+FLASH.ReProgram OFF
+
+;========================================================================
+;set JTAG clock back to default
+SYStem.BdmClock 4MHz
+
+; Configure all Breakpoints as OnChip
+Break.SELect Program OnChip
+Break.SELect Read    OnChip
+Break.SELect Write   OnChip
+Break.SELect Alpha   OnChip
+Break.SELect Beta    OnChip
+Break.SELect Charly  OnChip
+Break.SELect Delta   OnChip
+Break.SELect Echo    OnChip
+
+SYSTEM.OPTION IMASKASM ON
+SYSTEM.OPTION IMASKHLL ON
+
+SYStem.Option.WATCHDOG ON
+
+;SYStem.RESet
+SYStem.Up
+
+Print "programming done"
+
+;data.list
+CD.DO C:\T32_2014\CMM\EPB\EPB(NAMI).cmm
+
+; Load default Trace32 controls
+DO ~~/T32
+
+ENDDO

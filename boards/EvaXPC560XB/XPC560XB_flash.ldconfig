@@ -1,0 +1,196 @@
+/**************************************
+ * Copyright 1998-2014 Elektrobit Automotive GmbH
+ * All rights exclusively reserved for Elektrobit Automotive GmbH,
+ * unless expressly agreed to otherwise.
+ *
+ *
+ **************************************/
+
+ /* 
+  * !LINKSTO OsekCore.Platforms.Board.012, 1
+  */
+  
+MEMORY
+{
+    /******************************************************************
+    ********************** FLASH BOOTLOADER***************************/
+    /*
+    * !LINKSTO OsekCore.Platforms.Linker.007, 1
+    */
+    reset                : org = 0x00000000, len = 0x01000
+    /*
+    * !LINKSTO OsekCore.Platforms.Linker.006, 1
+    */
+    exctab               : org = 0x00001000, len = 0x00800
+    intctab              : org = 0x00001800, len = 0x00800
+    
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.002, 1
+    */
+    mtextboot            : org = 0x00002000, len = 0x14000
+    
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.008, 1
+    */
+    mtextflash           : org = 0x00016000, len = 0x02000
+    
+    /******************************************************************
+    ********************** FLASH APPLICATION **************************/
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.001, 1
+    */
+    reset_appl           : org = 0x00018000, len = 0x01000  /* Reset appli shall be @0x00018000 since it is the last Boot sector (chapter 5.1.1 of MPC5604BCRM) */
+    exctab_appl          : org = 0x00019000, len = 0x00800
+    intctab_appl         : org = 0x00019800, len = 0x00800
+    mtext_appl           : org = 0x0001A000, len = 0x65800 /* end of 512 kb Flash 0x80000*/
+    
+    /******************************************************************
+    ********************** RAM** **************************************/
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.009, 1
+    * !LINKSTO OsekCore.Platforms.Startup.012, 1
+    */
+      mkernstack           : org = 0x40000000, len = 0x00E00
+          
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.008, 1
+    */
+    mdataflash           : org = 0x40000E00, len = 0x02000
+    
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.003, 1
+    */
+    mdata                : org = 0x40002E00, len = 0x09F000
+    
+    /* 
+    * !LINKSTO OsekCore.Platforms.Linker.005, 1
+    */
+    section_noinit        : org = 0x4000BF00, len = 0x00100  /* 48 KB SRAM */
+
+}    
+
+SECTIONS
+{
+    .reset_data ORIGIN(reset_appl) : FLAGS(al)
+    {
+        *(.reset)
+    } > reset_appl
+    
+    .reset_data ORIGIN(reset_appl) : FLAGS(avl)
+    {
+        *(.reset_vle)
+    } > reset_appl
+
+    .reset_code : FLAGS(axl)
+    {
+        *(.reset_code)
+    } > reset_appl
+
+    .reset_code_vle : FLAGS(axvl)
+    {
+        *(.reset_code_vle)
+    } > reset_appl
+
+    .exctab ORIGIN(exctab_appl) : FLAGS(axl)
+    {
+        __EXCEPTION_TABLE_START = ABSOLUTE(.);
+        *(.exctab)
+    } > exctab_appl
+
+    .exctab_vle : FLAGS(axvl)
+    {
+        *(.exctab_vle)
+        __EXCEPTION_TABLE_START = ABSOLUTE(.);
+    } > exctab_appl
+
+    .intctab ALIGN(ORIGIN(intctab_appl), 2048) : FLAGS(axl)
+    {
+        __INTC_TABLE_START = ABSOLUTE(.);
+        *(.intctab)
+    } > intctab_appl
+
+    .intctab_vle : FLAGS(axvl)
+    {
+        *(.intctab_vle)
+        __INTC_TABLE_END = ABSOLUTE(.);
+    } > intctab_appl
+    
+    /* Function executed from RAM need to be aligned on 4 bytes imperatively. */
+    .fls_driver ALIGN(ORIGIN(mtextflash), 4) : FLAGS(axvl)
+    {
+       *(.fls_driver)
+    
+    } > mtextflash
+    __FLS_DRV_ST = . - SIZEOF(.fls_driver); 
+    __FLS_DRV_SIZE = . - __FLS_DRV_ST;
+    
+    .text_vle ORIGIN(mtext_appl) : FLAGS(axvl)
+    {
+        *(.text_vle*)
+    } > mtext_appl
+
+    .text : FLAGS(axl)
+    {
+        *(.text*)
+    } > mtext_appl
+
+    .rodata :
+    {
+        *(.rodata)
+        *(.init)
+        __DATA_ROM = ABSOLUTE(.);
+    } > mtext_appl     
+     
+    /* With the AT specification, the next command will
+     * reserve space for the .data section at the beginning of
+     * "ram" (the virtual memory address VMA), but actually place the
+     * data in the image at the end of the .text section as
+     * defined by __DATA_ROM (the load memory address LMA).
+     */
+     
+
+     
+    .data : AT(__DATA_ROM)
+    {
+        __DATA_RAM = ABSOLUTE(.);
+        *(.data)
+        __DATA_END = ABSOLUTE(.);
+    } > mdata
+
+    .bss (NOLOAD) : AT(LOADADDR(.data) + SIZEOF(.data))
+    {
+        __BSS_START = ABSOLUTE(.);
+        *(.bss)
+        __BSS_END = ABSOLUTE(.);
+        __HEAP_START = ABSOLUTE(.);
+    } > mdata
+    
+    .section_noinit (NOLOAD) :
+    {
+        __STARTNOINIT = .;
+        *(.section_noinit)
+        __ENDNOINIT = .;
+    } > section_noinit
+    
+}
+
+__FLASH_API_RAM_BASE  = ORIGIN(mdataflash);
+
+__SP_INIT             = ORIGIN(mkernstack) + LENGTH(mkernstack);
+__SP_END              = ORIGIN(mkernstack);
+
+__IVPR                = __EXCEPTION_TABLE_START;
+    _EXCEPTION_TABLE_START = __EXCEPTION_TABLE_START;
+    _INTC_TABLE_START = __INTC_TABLE_START;
+_INIT_                = __DATA_ROM;
+_DATA_START_          = __DATA_RAM;
+_DATA_END_            = __DATA_END;
+_BSS_START_           = __BSS_START;
+_BSS_END_             = __BSS_END;
+_SDA_BASE_            = 0;
+_SDA2_BASE_           = 0;
+_NOINIT_START_  = __STARTNOINIT;
+_NOINIT_END_    = __ENDNOINIT;
+
+
+
