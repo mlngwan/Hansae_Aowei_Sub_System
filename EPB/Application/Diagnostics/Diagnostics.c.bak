@@ -1,0 +1,2414 @@
+/************************ (C) COPYRIGHT 2007  **********************************
+* File Name					: Diagnostics.c
+* Author						: Gabriel Kang
+* Date First Issued	: 2018-03-09 
+* Description				: Diagnostics progress function defineion
+********************************************************************************
+* History:
+* 2018-03-09  v0.01
+********************************************************************************
+*******************************************************************************/
+/* Includes ------------------------------------------------------------------*/
+#include "common.h"
+#include "PortDefinition.h"
+#include "ADC.h"
+#include "spc560bsp.h"
+#include "EB_Prj.h"
+#include "board.h"
+#include "ee_types.h"
+#include "ee_emulation.h"
+#include "ee_manager.h"
+#include "Dspi.h"
+#include "Calibration.h"
+#include "DEM_Priv.h"
+
+/* Private typedef -----------------------------------------------------------*/
+typedef enum
+{
+	CheckShortToGround = 0,
+	CheckShortToBattery = 1
+}Type_Check;
+
+/* Private define ------------------------------------------------------------*/
+
+#define	UnderVoltage							6						// 6Volt
+#define	OverVoltage								17					//17Volt
+#define	MarurationTime_BatVolt		100					// 1Sec
+#define	DeMarurationTime_BatVolt	300					// 3Sec
+
+#define	Adc_ResolutionFactor		0.00488
+#define	NeutalShortToGround			1.25
+#define	NeutalShortToBattery		1.85
+#define	NeutalNormal						1.4
+
+#define	ShortToBatteryVolt			4.5
+#define	ShortToGroundVolt				0.5
+
+#define	SwitchShortToBatVolt		0.8
+#define	SwitchShortToGround			0.1
+
+#define	SwitchMuturationTime		10
+
+#define	VehicleID_RxTime				4500U
+#define	VehicleID_TimeOut				5000U
+
+#define	AmpareFactor							0.054				// 0.054 per 1ampre.
+#define UnderMaturationAmpare			0.05				// 0.05 is 50m Ampare
+#define UnderDematurationAmpare		1.6
+#define	OverCurrentMaturationAmpare				20U
+#define	OverCurrentDematurationAmpare			18U
+#define	MotorSaturationAmpare							17U
+#define PerformCheckCurrent								5U
+
+/* VIN Learning response Type */
+#define	RoutinePassed									0x00
+#define	InvalidVINReceived						0x01
+#define	TestTimeoutBeforVINReceived		0x02
+#define	InternalStorageProblem				0x03				// MemoryWrite error
+#define	VINReserved										0x04
+
+/* Vehicle Identifier */
+#define	SedanNonArmored				0x00
+#define	SedanArmored					0x01
+#define	VinReserved02					0x02
+#define	LimoArmoredV12				0x03
+#define	LimoArmoredV8					0x04
+#define	Cabrio								0x05
+#define	VinReserved06					0x06
+#define	VinReserved07					0x07
+
+#define	VinReserved10					0x10
+#define	VinReserved11					0x11
+#define	SuvNonArmored					0x12
+#define	SuvArmored						0x13
+#define	VinReserved14					0x14
+#define	VinReserved15					0x15
+#define	VinReserved16					0x16
+#define	VinReserved17					0x17
+
+#define	MpvNonArmored4Seats		0x20
+#define	MpvArmored8Seats			0x21
+#define	MpvNonArmored9Seats		0x22
+#define	MpvArmored9Seats			0x23
+#define	VinReserved24					0x24
+#define	VinReserved25					0x25
+#define	VinReserved26					0x26
+#define	MpvArmored4Seats			0x27
+
+/* Private macro -------------------------------------------------------------*/
+
+/* Private variables ---------------------------------------------------------*/
+/* - Public Variables                                                         */
+Flag_Type ubMutex_Flag1,ubMutex_Flag2,ubMutex_Flag3;
+
+uword	BatVolMaturationTime = 0,BatVolDematurationTime = 0,TemperMaturationTime = 0,TemperDematurationTime = 0;
+uword ForceMaturationTime = 0,ForceDematurationTime = 0,DriverMaturationTime = 0,DriverDematurationTime = 0;
+ubyte BatVoltFaultCycle = 0,TempFultCycle = 0,SPR_Req = 0;
+
+static ubyte	SwDiagMaturationTime = 0;
+static ubyte	SwitchDiagStep = 0;
+Type_DiagState  EpbSwitchDiagStatus;
+
+uword PerformMaturationTime = 0,PerformDematurationTime = 0;
+uword	PerformCurrent_Cnt = 0;
+int8_t PerformMaturationCycle = 2;
+CalibrationBus CalibrationDatas1,CalibrationDatas2,CalibrationDatas3;
+
+ubyte	PreviousParkBrakeStatus;/* Variable: PreviousParkBrakeStatus
+ * 0 : Unknown
+   1 : Applied
+   2 : Reserved
+   3 : Released
+ */
+
+//unsigned long DTC_Temperature = 0,DTC_ForceSensor = 0,DTC_MotorDriver = 0;
+
+uword	TempuratureTable[26] =
+{
+	1014,				// -40℃
+	1011,				// -35℃
+	1006,				// -30℃
+	1000,				// -25℃
+	992,				// -20℃
+	982,				// -15℃
+	969,				// -10℃
+	953,				// -5℃
+	935,				// 0℃
+	913,				// 5℃
+	887,				// 10℃
+	857,				// 15℃
+	823,				// 20℃
+	786,				// 25℃
+	745,				// 30℃
+	702,				// 35℃
+	657,				// 40℃
+	610,				// 45℃
+	563,				// 50℃
+	517,				// 55℃
+	472,				// 60℃
+	428,				// 65℃
+	387,				// 70℃
+	349,				// 75℃
+	313,				// 80℃
+	280					// 85℃
+};
+
+uword BatteryVoltTable[14] =
+{
+387,					// 5V
+404,					// 6V
+430,					// 7V
+455,					// 8V
+481,					// 9V
+505,					// 10V
+531,					// 11V
+555,					// 12V
+580,					// 13V
+606,					// 14V
+632,					// 15V
+656,					// 16V
+682,					// 17V
+708						// 18V
+};
+
+/* Private function prototypes -----------------------------------------------*/
+void DigTimer(void);
+Diag_SwShortType SwitchShortCheck(Type_Check CheckDirection,float CheckVal,float CheckStand);
+void BatteryVoltage_Check(void);
+void DTC_ForceSensor_ShortCheck(void);
+void DTC_MotorDriver_Check(void);
+void BoardTemperature_Check(void);
+Type_DiagState DiagEpbSwitch_Check(void);
+void SwitchFirstDiag(void);
+void VehicleIdentifierNumber_Learning(void);
+void OverUnderCurrent_Diag(void);
+void HallSensor_Diag(void);
+void ForceStuck_Diag(void);
+void EpbPerformance_Diag(void);
+void EpbStuck_Dig(void);
+uword CalculationForDifference(uword Data_A,uword Data_B);
+void Diag_Management_Prg(void);
+void CalibrationParameter_DataSet1(void);
+void CalibrationParameter_DataSet2(void);
+void CalibrationParameter_DataSet3(void);
+
+
+
+/* Private functions ---------------------------------------------------------*/
+
+void CalibrationParameter_DataSet1(void)
+{
+    LT_MotClutch LookupTableMotClutch_temp = 
+    	{ { 0.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 18.0, 20.0, 30.0 },
+		  { 30000.0, 30020.0, 30040.0, 30060.0, 30080.0, 30100.0, 30120.0, 30140.0,
+		    30160.0, 30180.0 }
+		};
+	CalibrationDatas1.LookupTableMotClutch = LookupTableMotClutch_temp;
+	CalibrationDatas1.PbcDataCorrectedLongAccelerationFilterFrequency = 4.0;
+	CalibrationDatas1.PbcDataCurrentFilterFrequency = 3.0;
+	CalibrationDatas1.PbcDataLongAccelerationFilterFrequency = 4.0;
+	CalibrationDatas1.PbcDataVehicleAccelerationFilterFrequency = 4.0;
+	CalibrationDatas1.PbcDataVehicleSpeedFilterFrequency = 4.0;
+
+	CalibrationDatas1.C_Accelator_Position_Threshold = 8U;
+	CalibrationDatas1.C_Additional_Release_Hall_Count = 50;
+	CalibrationDatas1.C_Additional_Release_PWM = 100;
+	CalibrationDatas1.C_Apply_Time = 300U;
+	CalibrationDatas1.C_AutoSafety_Vehicle_Speed_Threshold = 100U;
+	CalibrationDatas1.C_Brake_Pedal_Pressed_True_Pressure = 30U;
+	CalibrationDatas1.C_Dynamic_Braking_EPB_TargetDecel = 80U;
+	CalibrationDatas1.C_Dynamic_Braking_Vehicle_Speed_Threshold = 3000U;
+	CalibrationDatas1.C_Electric_Park_Brake_Vehicle_Speed_Apply_Threshold = 300U;
+	CalibrationDatas1.C_Light_Apply_Force = 160U;
+	CalibrationDatas1.C_Light_Apply_Grade_Threshold = 800U;
+	CalibrationDatas1.C_Max_Apply_Current = 315;
+	CalibrationDatas1.C_Max_Apply_Force = 230U;
+	CalibrationDatas1.C_Max_Apply_Grade_Threshold = 1200U;
+	CalibrationDatas1.C_Mid_Apply_Force = 190U;
+	CalibrationDatas1.C_Release_Current = 111;
+	CalibrationDatas1.C_Release_Force = 5U;
+	CalibrationDatas1.C_Release_Time = 300U;
+
+	CalibrationDatas1.C_Rollerbench_Force_Level1 = 160U;
+	CalibrationDatas1.C_Rollerbench_Force_Level2 = 190U;
+	CalibrationDatas1.C_Rollerbench_Force_Level3 = 220U;
+	CalibrationDatas1.C_Rollerbench_Max_Process_Time = 600U;
+
+	CalibrationDatas1.PbcDataMaxForce = 230;
+	CalibrationDatas1.PbcDataReleaseForce = 5;
+}
+
+void CalibrationParameter_DataSet2(void)
+{
+    LT_MotClutch LookupTableMotClutch_temp = 
+    	{ { 0.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 18.0, 20.0, 30.0 },
+		  { 30000.0, 30020.0, 30040.0, 30060.0, 30080.0, 30100.0, 30120.0, 30140.0,
+		    30160.0, 30180.0 }
+		};
+	CalibrationDatas2.LookupTableMotClutch = LookupTableMotClutch_temp;
+	CalibrationDatas2.PbcDataCorrectedLongAccelerationFilterFrequency = 4.0;
+	CalibrationDatas2.PbcDataCurrentFilterFrequency = 3.0;
+	CalibrationDatas2.PbcDataLongAccelerationFilterFrequency = 4.0;
+	CalibrationDatas2.PbcDataVehicleAccelerationFilterFrequency = 4.0;
+	CalibrationDatas2.PbcDataVehicleSpeedFilterFrequency = 4.0;
+
+	CalibrationDatas2.C_Accelator_Position_Threshold = 8U;
+	CalibrationDatas2.C_Additional_Release_Hall_Count = 50;
+	CalibrationDatas2.C_Additional_Release_PWM = 100;
+	CalibrationDatas2.C_Apply_Time = 300U;
+	CalibrationDatas2.C_AutoSafety_Vehicle_Speed_Threshold = 100U;
+	CalibrationDatas2.C_Brake_Pedal_Pressed_True_Pressure = 30U;
+	CalibrationDatas2.C_Dynamic_Braking_EPB_TargetDecel = 80U;
+	CalibrationDatas2.C_Dynamic_Braking_Vehicle_Speed_Threshold = 3000U;
+	CalibrationDatas2.C_Electric_Park_Brake_Vehicle_Speed_Apply_Threshold = 300U;
+	CalibrationDatas2.C_Light_Apply_Force = 160U;
+	CalibrationDatas2.C_Light_Apply_Grade_Threshold = 800U;
+	CalibrationDatas2.C_Max_Apply_Current = 315;
+	CalibrationDatas2.C_Max_Apply_Force = 230U;
+	CalibrationDatas2.C_Max_Apply_Grade_Threshold = 1200U;
+	CalibrationDatas2.C_Mid_Apply_Force = 190U;
+	CalibrationDatas2.C_Release_Current = 111;
+	CalibrationDatas2.C_Release_Force = 5U;
+	CalibrationDatas2.C_Release_Time = 300U;
+
+	CalibrationDatas2.C_Rollerbench_Force_Level1 = 160U;
+	CalibrationDatas2.C_Rollerbench_Force_Level2 = 190U;
+	CalibrationDatas2.C_Rollerbench_Force_Level3 = 220U;
+	CalibrationDatas2.C_Rollerbench_Max_Process_Time = 600U;
+
+	CalibrationDatas2.PbcDataMaxForce = 230;
+	CalibrationDatas2.PbcDataReleaseForce = 5;
+}
+
+void CalibrationParameter_DataSet3(void)
+{
+    LT_MotClutch LookupTableMotClutch_temp = 
+    	{ { 0.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 18.0, 20.0, 30.0 },
+		  { 30000.0, 30020.0, 30040.0, 30060.0, 30080.0, 30100.0, 30120.0, 30140.0,
+		    30160.0, 30180.0 }
+		};
+	CalibrationDatas3.LookupTableMotClutch = LookupTableMotClutch_temp;
+	CalibrationDatas3.PbcDataCorrectedLongAccelerationFilterFrequency = 4.0;
+	CalibrationDatas3.PbcDataCurrentFilterFrequency = 3.0;
+	CalibrationDatas3.PbcDataLongAccelerationFilterFrequency = 4.0;
+	CalibrationDatas3.PbcDataVehicleAccelerationFilterFrequency = 4.0;
+	CalibrationDatas3.PbcDataVehicleSpeedFilterFrequency = 4.0;
+
+	CalibrationDatas3.C_Accelator_Position_Threshold = 8U;
+	CalibrationDatas3.C_Additional_Release_Hall_Count = 50;
+	CalibrationDatas3.C_Additional_Release_PWM = 100;
+	CalibrationDatas3.C_Apply_Time = 300U;
+	CalibrationDatas3.C_AutoSafety_Vehicle_Speed_Threshold = 100U;
+	CalibrationDatas3.C_Brake_Pedal_Pressed_True_Pressure = 30U;
+	CalibrationDatas3.C_Dynamic_Braking_EPB_TargetDecel = 80U;
+	CalibrationDatas3.C_Dynamic_Braking_Vehicle_Speed_Threshold = 3000U;
+	CalibrationDatas3.C_Electric_Park_Brake_Vehicle_Speed_Apply_Threshold = 300U;
+	CalibrationDatas3.C_Light_Apply_Force = 160U;
+	CalibrationDatas3.C_Light_Apply_Grade_Threshold = 800U;
+	CalibrationDatas3.C_Max_Apply_Current = 315;
+	CalibrationDatas3.C_Max_Apply_Force = 230U;
+	CalibrationDatas3.C_Max_Apply_Grade_Threshold = 1200U;
+	CalibrationDatas3.C_Mid_Apply_Force = 190U;
+	CalibrationDatas3.C_Release_Current = 111;
+	CalibrationDatas3.C_Release_Force = 5U;
+	CalibrationDatas3.C_Release_Time = 300U;
+
+	CalibrationDatas3.C_Rollerbench_Force_Level1 = 160U;
+	CalibrationDatas3.C_Rollerbench_Force_Level2 = 190U;
+	CalibrationDatas3.C_Rollerbench_Force_Level3 = 220U;
+	CalibrationDatas3.C_Rollerbench_Max_Process_Time = 600U;
+
+	CalibrationDatas3.PbcDataMaxForce = 230;
+	CalibrationDatas3.PbcDataReleaseForce = 5;
+}
+
+/********************************************************************************
+* Function Name		: Timer routine for diagnostics
+* Description			: 10ms check timer
+* input						: None
+* return					: None
+********************************************************************************/
+void DigTimer(void)
+{
+	if(Bit_10msec)
+	{
+		Bit_10msec = 0;
+
+		++SwDiagMaturationTime;
+	}
+}
+
+/********************************************************************************
+* Function Name		: DTC_ForceSensor_Check
+* Description			: Force sensor DTC check routine
+* input						: None
+* return					: None
+********************************************************************************/
+Diag_enum Diag_Force;
+float PhysicalVoltage;
+
+void DTC_ForceSensor_ShortCheck(void)
+{
+#if 1
+	PhysicalVoltage = BoardState.ForceSensorValue * Adc_ResolutionFactor;
+	if(PhysicalVoltage > ShortToBatteryVolt)										//1 Force Sensor short to Battery check
+	{
+		ForceDematurationTime = 0;
+		if(ForceMaturationTime > 99)							// 1sec maturation time check
+		{
+			ForceMaturationTime = 0;
+			/* Signal clearance confirmation */
+			if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_FORCESENSHOTBAT].ubDtcStatusMask, DEM_SM_TF, u8))
+			{
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_FORCESENSHOTBAT, DEM_TEST_FAIL);
+			}
+			Diag_Force |= ShortToVcc;
+		}
+	}
+	//1 Force sensor value를 0~900까지 사용하고 있기때에 Short to GND는 check할 수 없음.
+	//1 So, I will use open DTC instead of short to GND DTC.
+#if 0
+	else if((PreviousParkBrakeStatus ==3) && (fActuatorApplying) ||		//Actuator is moving or not?
+				(PreviousParkBrakeStatus ==1) && (fActuatorReleasing))
+	{
+		ForceDematurationTime = 0;
+		if(PhysicalVoltage < ShortToGroundVolt)	//1 Force Sensor short to Ground check(Released 상태에서 0값이 나올수 있기 때문에동작중에만 확인한다.)
+		{
+			if(ForceMaturationTime > 99)							// 1sec maturation time check
+			{
+				ForceMaturationTime = 0;
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_FORCESENSHOTGND].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_FORCESENSHOTGND, DEM_TEST_FAIL);
+				}
+				Diag_Force |= ShortToGnd;
+			}
+		}
+	}
+#endif
+	else
+	{
+		ForceMaturationTime = 0;
+		if(ForceDematurationTime > 99)							// 1sec dematuration time check.
+		{
+			ForceDematurationTime = 0;
+			Diag_Force &= ~(ShortToGnd | ShortToVcc);
+			
+			/* Signal clearance confirmation */
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_FORCESENSHOTBAT, DEM_TEST_PASS);
+
+			/* Signal clearance confirmation */
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_FORCESENSHOTGND, DEM_TEST_PASS);
+		}
+	}
+
+	if(Diag_Force > NoInit)
+	{
+		DiagInput.D9_ForceSensor = 1;					//1 Force Sensor Fault
+	}
+	else
+	{
+		DiagInput.D9_ForceSensor = 0;
+	}
+#else
+	if((PreviousParkBrakeStatus ==3) || (PreviousParkBrakeStatus ==1))
+	{
+		PCR_ForceIN = (PORT_PINCFG_INPUT_MODE | PORT_PINCFG_WEAK_PULL_UP);
+		if(ForceMaturationTime > 99)							// 1sec maturation time check
+		{
+			ForceMaturationTime = 0;
+			
+			if(GPDI_ForceIN)
+			{
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_FORCESENSHOTBAT].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_FORCESENSHOTBAT, DEM_TEST_FAIL);
+				}
+				Diag_Force |= ShortToVcc;
+			}
+			else
+			{
+				if(ForceDematurationTime > 99)							// 1sec dematuration time check.
+				{
+					ForceDematurationTime = 0;
+				}
+			}
+
+			PCR_ForceIN = (PORT_PINCFG_INPUT_MODE | PORT_PINCFG_WEAK_PULL_DOWN);
+			if(!GPDI_ForceIN)
+			{
+				
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_FORCESENSHOTGND].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_FORCESENSHOTGND, DEM_TEST_FAIL);
+				}
+				Diag_Force |= ShortToGnd;
+			}
+		}
+	}
+	else
+	{
+		ForceMaturationTime = 0;
+		PCR_ForceIN = PORT_PINCFG_ANALOGON;								//Force Sensor ADC Config.
+	}
+#endif
+}
+
+/********************************************************************************
+* Function Name		: ConvertToPhysicalBatVolt
+* Description			: Battery voltage convert to physical voltage.
+* input						: None
+* return					: float
+********************************************************************************/
+float ConvertToPhysicalBatVolt(void)
+{
+	float Temp_Float,Temp_Float1,PhysicalBatVolt;
+	ubyte i,ubDifference,ubTempRemain;
+
+	if(BoardState.AdcBatVolt < BatteryVoltTable[0])
+	{
+		PhysicalBatVolt = 4.9;
+	}
+	else if(BoardState.AdcBatVolt > BatteryVoltTable[13])
+	{
+		PhysicalBatVolt = 18.1;
+	}
+	else
+	{
+		for(i=1;i<13;i++)
+		{
+			if(BoardState.AdcBatVolt < BatteryVoltTable[i])
+			{
+				ubDifference = BatteryVoltTable[i] - BatteryVoltTable[i-1];
+				Temp_Float = (float)ubDifference;
+				Temp_Float1 = Temp_Float / 10;
+
+				ubTempRemain = BoardState.AdcBatVolt - BatteryVoltTable[i-1];
+				PhysicalBatVolt = ((float)ubTempRemain / Temp_Float1)/10 + i+4;
+				break;
+			}
+		}
+	}
+	return PhysicalBatVolt;
+}
+
+/********************************************************************************
+* Function Name		: Battery Voltage ADC Routine
+* Description			: Battery voltage read via ADC
+* input						: None
+* return					: Return Type_DiagBatVolt
+*										- First value is physical battery voltage value.
+*										- Last one is DTC hex code
+********************************************************************************/
+void BatteryVoltage_Check(void)
+{
+	if(BoardState.BatteryVolt < UnderVoltage)									//1 Under voltage check
+	{
+		BatVolDematurationTime = 0;
+		if(BatVolMaturationTime >= MarurationTime_BatVolt)			// Maturation time(1sec) check
+		{
+			BatVolMaturationTime = MarurationTime_BatVolt;
+			
+			/* Signal clearance confirmation */
+			if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_BATUNDERVOLTAGE].ubDtcStatusMask, DEM_SM_TF, u8))
+			{
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_BATUNDERVOLTAGE, DEM_TEST_FAIL);
+			}
+			DiagInput.D2_Battery = 1;															//1 Battery Voltage fault
+		}
+	}
+	else if(BoardState.BatteryVolt > OverVoltage)							//1 Over voltage check
+	{
+		BatVolDematurationTime = 0;
+		if(BatVolMaturationTime >= MarurationTime_BatVolt)			// Maturation time(1sec) check
+		{
+			BatVolMaturationTime = MarurationTime_BatVolt;
+			
+			/* Signal clearance confirmation */
+			if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_BATOVERVOLTAGE].ubDtcStatusMask, DEM_SM_TF, u8))
+			{
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_BATOVERVOLTAGE, DEM_TEST_FAIL);
+			}
+			DiagInput.D2_Battery = 1;															//1 Battery Voltage fault
+		}
+	}
+	else																											//1 Normal operating voltage range.
+	{
+		BatVolMaturationTime = 0;
+		if(BatVolDematurationTime >= DeMarurationTime_BatVolt)	// Maturation time(1sec) check
+		{
+			BatVolDematurationTime = 0;
+
+			DiagInput.D2_Battery = 0;															//1 Battery Voltage normal.
+			
+			/* Signal clearance confirmation */
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_BATUNDERVOLTAGE, DEM_TEST_PASS);
+			/* Signal clearance confirmation */
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_BATOVERVOLTAGE, DEM_TEST_PASS);
+		}
+	}
+}
+
+/********************************************************************************
+* Function Name		: Battery Voltage ADC Routine
+* Description			: Battery voltage read via ADC
+* input						: None
+* return					: None
+********************************************************************************/
+void BoardTemperature_Check(void)
+{
+uword ReadADC;
+
+	ReadADC = BoardState.AdcTemperature;
+
+	if(TempuratureTable[0] < ReadADC)								//1 Under temperature
+	{
+		TemperDematurationTime = 0;
+		if(TemperMaturationTime > 499)								// 5sec check
+		{
+			TemperMaturationTime = 0;
+
+			/* Signal clearance confirmation */
+			if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_UNDERTEMPERATURE].ubDtcStatusMask, DEM_SM_TF, u8))
+			{
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_UNDERTEMPERATURE, DEM_TEST_FAIL);
+			}
+			DiagInput.D4_Temperature = 1;								//1 Temperature Sensor Fault
+		}
+	}
+	else if(TempuratureTable[25] > ReadADC)					//1 Over temperature
+	{
+		TemperDematurationTime = 0;
+		if(TemperMaturationTime > 499)								// 5sec check
+		{
+			TemperMaturationTime = 0;
+
+			/* Signal clearance confirmation */
+			if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_OVERTEMPERATURE].ubDtcStatusMask, DEM_SM_TF, u8))
+			{
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_OVERTEMPERATURE, DEM_TEST_FAIL);
+			}
+			DiagInput.D4_Temperature = 1;								//1 Temperature Sensor Fault
+		}
+	}
+	else
+	{
+		TemperMaturationTime = 0;
+
+		if(TemperDematurationTime > 299)							// 3sec check
+		{
+			TemperDematurationTime = 0;
+			DiagInput.D4_Temperature = 0;
+			
+			/* Signal clearance confirmation */
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_UNDERTEMPERATURE, DEM_TEST_PASS);
+			
+			/* Signal clearance confirmation */
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_OVERTEMPERATURE, DEM_TEST_PASS);
+		}
+	}
+}
+
+/********************************************************************************
+* Function Name		: DTC_MotorDriver_Check
+* Description			: Dotor Driver DTC Check routine
+										If IS pin of motor driver is high, motor driver is over current fault,
+										current limitation mode and short circuit when INH pin is logic high.
+										INH pin logic high means that actuator is running.
+* input						: None
+* return					: None
+********************************************************************************/
+float ReadADC1,ReadADC2;
+
+void DTC_MotorDriver_Check(void)
+{
+	ReadADC1 = (float)ADC_Check_With_Average(LM_CS1_AdcChennel);
+	ReadADC2 = (float)ADC_Check_With_Average(LM_CS2_AdcChennel);
+
+	ReadADC1 *= Adc_ResolutionFactor;
+	ReadADC2 *= Adc_ResolutionFactor;
+
+	if(fActuatorApplying && fActuatorReleasing)						//Actuator is moving?
+	{
+		DriverDematurationTime = 0;
+		if((ReadADC1 > ShortToBatteryVolt) ||
+			(ReadADC2 > ShortToBatteryVolt))
+		{
+			if(DriverMaturationTime > 9)													// 100ms Maturation time check
+			{
+				DriverMaturationTime = 0;
+				
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_MTRDRVSHOTBAT].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_MTRDRVSHOTBAT, DEM_TEST_FAIL);
+				}
+
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_MTRDRVSHOTGND].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_MTRDRVSHOTGND, DEM_TEST_FAIL);
+				}
+				DiagInput.D3_MotorDriver = 1;							//1 Motor Driver Fault
+			}
+		}
+		else
+		{
+			DriverMaturationTime = 0;
+			if(DriverDematurationTime > 9)													// 100ms Maturation time check
+			{
+				DriverDematurationTime = 0;
+				DiagInput.D3_MotorDriver = 0;
+
+				/* Signal clearance confirmation */
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_MTRDRVSHOTBAT, DEM_TEST_PASS);
+
+				/* Signal clearance confirmation */
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_MTRDRVSHOTGND, DEM_TEST_PASS);
+			}
+		}
+	}
+}
+
+/********************************************************************************
+* Function Name		: SwitchShortCheck
+* Description			: EPB Switch short to battery & ground check routine
+* input						: CheckDirection are CheckShortToGround or CheckShortToBattery types.
+										CheckVal is to check object.
+										CheckStand is threshold level to check.
+* return					: Return Diag_SwShortType status value.
+********************************************************************************/
+Diag_SwShortType SwitchShortCheck(Type_Check CheckDirection,float CheckVal,float CheckStand)
+{
+	Diag_SwShortType ReturnValue = 0;
+	
+	if(CheckDirection)
+	{
+		if(CheckVal > CheckStand)								// Switch Short to battery check
+		{
+			if(SwDiagMaturationTime > 8)						// Switch muturation time check
+			{
+				ReturnValue = ShortToBattery;
+			}
+		}
+		else
+		{
+			ReturnValue = Normal;
+		}
+	}
+	else
+	{
+		if(CheckVal < CheckStand)								// Switch Short to Ground check
+		{
+			if(SwDiagMaturationTime > 8)						// Switch muturation time check
+			{
+				ReturnValue = ShortToGndOrOpen;
+			}
+		}
+		else
+		{
+			ReturnValue = Normal;
+		}
+	}
+
+	return ReturnValue;
+}
+
+/********************************************************************************
+* Function Name		: Diagnostics Switch Status Check routine
+* Description			: EPB Switch status check for dignostics
+* input						: None
+* return					: Return Type_DiagSwitch status value.
+********************************************************************************/
+void DiagSwitch(float *ApplySwAdValue,float *ReleaseSwAdValue,float *NeutralSwAdValue,
+								float *Switch1_AdValue,float *Switch4_AdValue,float *Switch5_AdValue)
+{
+	float Temp = 0;
+	
+	Temp = (float)ADC_ApplySwitch();
+	*ApplySwAdValue = Temp * Adc_ResolutionFactor;								// Conversion to physical voltage.
+
+	Temp = (float)ADC_ReleaseSwitch();
+	*ReleaseSwAdValue = Temp * Adc_ResolutionFactor;							// Conversion to physical voltage.
+
+	Temp = (float)ADC_NeutralSwitch();
+	*NeutralSwAdValue = Temp * Adc_ResolutionFactor;							// Conversion to physical voltage.
+
+	Temp = (float)ADC_Check_With_Average(Switch1_AdcChennel);		// Switch1
+	*Switch1_AdValue = Temp * Adc_ResolutionFactor;							// Conversion to physical voltage.
+
+	Temp = (float)ADC_Check_With_Average(Switch4_AdcChennel);		// Switch4
+	*Switch4_AdValue = Temp * Adc_ResolutionFactor;							// Conversion to physical voltage.
+
+	Temp = (float)ADC_Check_With_Average(Switch5_AdcChennel);		// Switch5
+	*Switch5_AdValue = Temp * Adc_ResolutionFactor;							// Conversion to physical voltage.
+}
+
+/********************************************************************************
+* Function Name		: Diagnostics Switch Status Check routine
+* Description			: EPB Switch status check for dignostics
+* input						: None
+* return					: Return Type_DiagSwitch status value.
+********************************************************************************/
+int8_t	SwCross_MaturCycle = 2;
+Type_DiagState DiagEpbSwitch_Check(void)
+{
+	float Temp = 0;
+	float ApplySwAdValue,ReleaseSwAdValue,NeutralSwAdValue,Switch1_AdValue,
+				Switch4_AdValue,Switch5_AdValue;
+	Type_DiagState ReturnValue = 0;
+	ubyte	i;
+
+	do
+	{
+		DigTimer();
+
+		if(SwDiagMaturationTime > 9)																		// Switch muturation time check
+		{
+			++SwitchDiagStep;
+			SwDiagMaturationTime = 0;
+		}
+		
+		switch(SwitchDiagStep)
+		{
+			case 0:
+				PORT_SW1_Vs = 0;				// Neutral Switch couple power supply
+				PORT_Switch124On = 1;		// Switch input enable port for neutral and apply switch
+				PORT_SW4_Vs = 0;				// Apply Switch couple power supply
+				PORT_SW5_Vs = 0;				// Release Switch couple power supply
+
+				DiagSwitch(&ApplySwAdValue,&ReleaseSwAdValue,&NeutralSwAdValue,
+										&Switch1_AdValue,&Switch4_AdValue,&Switch5_AdValue);
+		
+				ReturnValue.ApplySwSt |= SwitchShortCheck(CheckShortToBattery,					// Apply Switch Short to battery check
+																	ApplySwAdValue,SwitchShortToBatVolt);
+
+				ReturnValue.ReleaseSwSt |= SwitchShortCheck(CheckShortToBattery, 				// Release Switch Short to battery check
+																		ReleaseSwAdValue,SwitchShortToBatVolt);
+
+				ReturnValue.NeutralSwSt |= SwitchShortCheck(CheckShortToBattery, 				// Neutral Switch Short to battery check
+																		NeutralSwAdValue,NeutalShortToBattery);
+
+				ReturnValue.Switch1_Status |= SwitchShortCheck(CheckShortToBattery, 		// Switch 1 Short to battery check
+																				Switch1_AdValue,NeutalShortToBattery);
+
+				ReturnValue.Switch4_Status |= SwitchShortCheck(CheckShortToBattery,			// Switch 4 Short to battery check
+																				Switch4_AdValue,NeutalShortToBattery);
+
+				ReturnValue.Switch5_Status |= SwitchShortCheck(CheckShortToBattery,			// Switch 5 Short to battery check
+																				Switch5_AdValue,SwitchShortToBatVolt);
+			break;
+			case 1:
+				PORT_SW1_Vs = 1;				// Neutral Switch couple power supply
+				PORT_Switch124On = 1;	// Switch input enable port for neutral and apply switch
+				PORT_SW4_Vs = 1;				// Apply Switch couple power supply
+				PORT_SW5_Vs = 1;				// Release Switch couple power supply
+
+				DiagSwitch(&ApplySwAdValue,&ReleaseSwAdValue,&NeutralSwAdValue,
+										&Switch1_AdValue,&Switch4_AdValue,&Switch5_AdValue);
+				
+				ReturnValue.ApplySwSt |= SwitchShortCheck(CheckShortToGround,						// Apply Switch Short to ground check
+				ApplySwAdValue,SwitchShortToGround);
+
+				ReturnValue.ReleaseSwSt |= SwitchShortCheck(CheckShortToGround, 				// Release Switch Short to ground check
+				ReleaseSwAdValue,SwitchShortToGround);
+
+				ReturnValue.NeutralSwSt |= SwitchShortCheck(CheckShortToGround, 				// Neutral Switch Short to ground check
+				NeutralSwAdValue,NeutalShortToGround);
+
+				ReturnValue.Switch1_Status |= SwitchShortCheck(CheckShortToGround, 			// Switch 1 Short to ground check
+				Switch1_AdValue,NeutalShortToGround);
+
+				ReturnValue.Switch4_Status |= SwitchShortCheck(CheckShortToGround,			// Switch 4 Short to ground check
+				Switch4_AdValue,NeutalShortToGround);
+
+				ReturnValue.Switch5_Status |= SwitchShortCheck(CheckShortToGround,			// Switch 5 Short to ground check
+				Switch5_AdValue,SwitchShortToGround);
+			break;
+			case 2:
+				PORT_SW1_Vs = 1;				// Neutral Switch couple power supply
+				PORT_Switch124On = 1;	// Switch input enable port for neutral and apply switch
+				PORT_SW4_Vs = 0;				// Apply Switch couple power supply
+				PORT_SW5_Vs = 0;				// Release Switch couple power supply
+
+				DiagSwitch(&ApplySwAdValue,&ReleaseSwAdValue,&NeutralSwAdValue,
+										&Switch1_AdValue,&Switch4_AdValue,&Switch5_AdValue);
+				
+				if(SwitchShortCheck(CheckShortToBattery,ApplySwAdValue,									// Apply Switch Short to battery check
+					SwitchShortToBatVolt)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.ApplySwSt |= SignalCrossCoupled;
+					}
+				}
+				
+				if(SwitchShortCheck(CheckShortToBattery,ReleaseSwAdValue,				 				// Release Switch Short to battery check
+					SwitchShortToBatVolt) == ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.ReleaseSwSt |= SignalCrossCoupled;
+					}
+				}
+
+				if(SwitchShortCheck(CheckShortToBattery,Switch4_AdValue,								// Switch 4 Short to battery check
+					NeutalShortToBattery) == ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.Switch4_Status |= SignalCrossCoupled;
+					}
+				}
+
+				if(SwitchShortCheck(CheckShortToBattery,Switch5_AdValue,								// Switch 5 Short to battery check
+					SwitchShortToBatVolt) == ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.Switch5_Status |= SignalCrossCoupled;
+					}
+				}
+
+				if(ReturnValue.NeutralSwSt != ReturnValue.Switch1_Status)
+				{
+					if(SwDiagMaturationTime > 9)						// Switch muturation time check
+					{
+						ReturnValue.NeutralSwSt |= ShortToGndOrOpen;
+					}
+				}
+			break;
+			case 3:				
+				PORT_SW1_Vs = 0;				// Neutral Switch couple power supply
+				PORT_Switch124On = 1;		// Switch input enable port for neutral and apply switch
+				PORT_SW4_Vs = 1;				// Apply Switch couple power supply
+				PORT_SW5_Vs = 0;				// Release Switch couple power supply
+
+				DiagSwitch(&ApplySwAdValue,&ReleaseSwAdValue,&NeutralSwAdValue,
+										&Switch1_AdValue,&Switch4_AdValue,&Switch5_AdValue);
+				
+				if(SwitchShortCheck(CheckShortToBattery,ReleaseSwAdValue, 						// Release Switch Short to battery check
+					SwitchShortToBatVolt)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.ReleaseSwSt |= SignalCrossCoupled;
+					}
+				}
+				
+				if(SwitchShortCheck(CheckShortToBattery,NeutralSwAdValue,			 				// Neutral Switch Short to battery check
+					NeutalShortToBattery)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.NeutralSwSt |= SignalCrossCoupled;
+					}
+				}
+				
+				if(SwitchShortCheck(CheckShortToBattery,Switch1_AdValue,				 			// Switch 1 Short to battery check
+					NeutalShortToBattery)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.Switch1_Status |= SignalCrossCoupled;
+					}
+				}
+				if(SwitchShortCheck(CheckShortToBattery,Switch5_AdValue,							// Switch 5 Short to battery check
+					SwitchShortToBatVolt)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.Switch5_Status |= SignalCrossCoupled;
+					}
+				}
+
+				if(ReturnValue.ApplySwSt != ReturnValue.Switch4_Status)
+				{
+					if(SwDiagMaturationTime > 9)																					// Switch muturation time check
+					{
+						ReturnValue.ApplySwSt |= ShortToGndOrOpen;
+					}
+				}
+			break;
+			case 4:
+				PORT_SW1_Vs = 0;				// Neutral Switch couple power supply
+				PORT_Switch124On = 1;		// Switch input enable port for neutral and apply switch
+				PORT_SW4_Vs = 0;				// Apply Switch couple power supply
+				PORT_SW5_Vs = 1;				// Release Switch couple power supply
+
+				DiagSwitch(&ApplySwAdValue,&ReleaseSwAdValue,&NeutralSwAdValue,
+										&Switch1_AdValue,&Switch4_AdValue,&Switch5_AdValue);
+				
+				if(SwitchShortCheck(CheckShortToBattery,ApplySwAdValue,							// Apply Switch Short to battery check
+					SwitchShortToBatVolt)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.ApplySwSt |= SignalCrossCoupled;
+					}
+				}
+
+				if(SwitchShortCheck(CheckShortToBattery,NeutralSwAdValue,		 				// Neutral Switch Short to battery check
+					NeutalShortToBattery)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.NeutralSwSt |= SignalCrossCoupled;
+					}
+				}
+
+				if(SwitchShortCheck(CheckShortToBattery,Switch1_AdValue,			 			// Switch 1 Short to battery check
+					NeutalShortToBattery)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.Switch1_Status |= SignalCrossCoupled;
+					}
+				}
+
+				if(SwitchShortCheck(CheckShortToBattery,Switch4_AdValue,						// Switch 4 Short to battery check
+					NeutalShortToBattery)== ShortToBattery)
+				{
+					if(!fCrossSwFault_Mutex)
+					{
+						fCrossSwFault_Mutex = 1;
+						--SwCross_MaturCycle;
+					}
+					
+					if(SwCross_MaturCycle < 0)
+					{
+						SwCross_MaturCycle = 0;
+						ReturnValue.Switch4_Status |= SignalCrossCoupled;
+					}
+				}
+
+				if(ReturnValue.ReleaseSwSt != ReturnValue.Switch5_Status)
+				{
+					if(SwDiagMaturationTime > 9)																				// Switch muturation time check
+					{
+						ReturnValue.ReleaseSwSt |= ShortToGndOrOpen;
+					}
+				}
+			break;
+			default:break;
+		}
+	}while(SwitchDiagStep < 4);
+	return ReturnValue;
+}
+
+/********************************************************************************
+* Function Name		: SwitchFirstDiag
+* Description			: Initial Diagnostics service routine according to time scheduling.
+										Also this routine is devided 100ms
+* input						: None
+* return					: Return Type_DiagSwitch status value.
+********************************************************************************/
+void SwitchFirstDiag(void)
+{
+ubyte	Cnt_100ms = 0;
+
+	EpbSwitchDiagStatus = DiagEpbSwitch_Check();
+
+	//1 Apply Switch DTC Status Check
+	if(EpbSwitchDiagStatus.ApplySwSt == ShortToBattery)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_APPLYSWSHOTBAT].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_APPLYSWSHOTBAT, DEM_TEST_FAIL);
+		}
+	}
+	else if(EpbSwitchDiagStatus.ApplySwSt == ShortToGndOrOpen)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_APPLYSWSHOTGND].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_APPLYSWSHOTGND, DEM_TEST_FAIL);
+		}
+	}
+	else if(EpbSwitchDiagStatus.ApplySwSt == SignalCrossCoupled)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED, DEM_TEST_FAIL);
+		}
+	}
+	else
+	{		
+		/* Signal clearance confirmation */
+		DEM_DtcTestStatus(DEM_DTC_IDX_DTC_APPLYSWSHOTBAT, DEM_TEST_PASS);
+
+		/* Signal clearance confirmation */
+		DEM_DtcTestStatus(DEM_DTC_IDX_DTC_APPLYSWSHOTGND, DEM_TEST_PASS);
+
+		if(fCrossSwFault_Mutex)
+		{
+			fCrossSwFault_Mutex = 0;
+			++SwCross_MaturCycle;
+		}
+		
+		if(SwCross_MaturCycle > -1)
+		{
+			if(SwCross_MaturCycle > 2)
+			{
+				SwCross_MaturCycle = 0;
+			}
+
+			/* Signal clearance confirmation */
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED, DEM_TEST_PASS);
+		}
+	}
+
+	//1 Release Switch DTC Status Check
+	if(EpbSwitchDiagStatus.ReleaseSwSt == ShortToBattery)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_RLSSWSHOTBAT].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_RLSSWSHOTBAT, DEM_TEST_FAIL);
+		}
+	}
+	else if(EpbSwitchDiagStatus.ReleaseSwSt == ShortToGndOrOpen)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_RLSSWSHOTGND].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_RLSSWSHOTGND, DEM_TEST_FAIL);
+		}
+	}
+	else if(EpbSwitchDiagStatus.ReleaseSwSt == SignalCrossCoupled)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED, DEM_TEST_FAIL);
+		}
+	}
+	else
+	{		
+		/* Signal clearance confirmation */
+		DEM_DtcTestStatus(DEM_DTC_IDX_DTC_RLSSWSHOTBAT, DEM_TEST_PASS);
+
+		/* Signal clearance confirmation */
+		DEM_DtcTestStatus(DEM_DTC_IDX_DTC_RLSSWSHOTGND, DEM_TEST_PASS);
+
+		if(fCrossSwFault_Mutex)
+		{
+			fCrossSwFault_Mutex = 0;
+			++SwCross_MaturCycle;
+		}
+		
+		if(SwCross_MaturCycle > -1)
+		{
+			if(SwCross_MaturCycle > 2)
+			{
+				SwCross_MaturCycle = 0;
+			}
+
+			/* Signal clearance confirmation */
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED, DEM_TEST_PASS);
+		}
+	}
+
+	//1 Neutral Switch DTC Status Check
+	if(EpbSwitchDiagStatus.NeutralSwSt == ShortToBattery)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_NEUTRALSWSHOTBAT].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_NEUTRALSWSHOTBAT, DEM_TEST_FAIL);
+		}
+	}
+	else if(EpbSwitchDiagStatus.NeutralSwSt == ShortToGndOrOpen)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_NEUTRALSWSHOTGND].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_NEUTRALSWSHOTGND, DEM_TEST_FAIL);
+		}
+	}
+	else if(EpbSwitchDiagStatus.NeutralSwSt == SignalCrossCoupled)
+	{
+		/* Signal clearance confirmation */
+		if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED].ubDtcStatusMask, DEM_SM_TF, u8))
+		{
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED, DEM_TEST_FAIL);
+		}
+	}
+	else
+	{	
+		/* Signal clearance confirmation */
+		DEM_DtcTestStatus(DEM_DTC_IDX_DTC_NEUTRALSWSHOTBAT, DEM_TEST_PASS);
+
+		/* Signal clearance confirmation */
+		DEM_DtcTestStatus(DEM_DTC_IDX_DTC_NEUTRALSWSHOTGND, DEM_TEST_PASS);
+
+		if(fCrossSwFault_Mutex)
+		{
+			fCrossSwFault_Mutex = 0;
+			++SwCross_MaturCycle;
+		}
+		
+		if(SwCross_MaturCycle > -1)
+		{
+			if(SwCross_MaturCycle > 2)
+			{
+				SwCross_MaturCycle = 0;
+			}
+
+			/* Signal clearance confirmation */
+			DEM_DtcTestStatus(DEM_DTC_IDX_DTC_SWITCHCROSCOUPLED, DEM_TEST_PASS);
+		}
+	}
+
+	PORT_SW1_Vs = 0;
+	PORT_SW4_Vs = 1;				//Bat Volt enable TR On for Switch check
+	PORT_SW5_Vs = 1;				//Switch 5347 Enable TR On for Switch check
+	PORT_Switch124On = 1;
+}
+
+/********************************************************************************
+* Function Name		: OverUnderCurrent_Diag
+* Description			: Motor current diagnostic for under current and over current 
+										when actuator is running.
+* input						: None
+* return					: None
+********************************************************************************/
+uword UnderCurMaturationTime = 0,UnderCurDematurationTime = 0;
+uword OverCurMaturationTime = 0,OverCurDematurationTime = 0;
+
+void OverUnderCurrent_Diag(void)
+{
+float	Ampare,Temp = 0;
+
+	Temp = ShuntCur_MonitorL;
+	Ampare = Temp * AmpareFactor;
+	if((!fActuatorApplying)&&(!fActuatorReleasing))			//1 When actuator is not moving.
+	{
+		UnderCurMaturationTime = 0;
+		UnderCurDematurationTime = 0;
+		
+		if(Ampare > OverCurrentMaturationAmpare)					//1 Over Current
+		{
+			OverCurDematurationTime = 0;
+			if(OverCurMaturationTime > 20)				// 200ms
+			{
+				OverCurMaturationTime = 0;
+
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_MTROVERCURRENT].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_MTROVERCURRENT, DEM_TEST_FAIL);
+				}
+				DiagInput.D11_CurrentSensor = 1;
+			}
+		}
+		else if(Ampare < OverCurrentMaturationAmpare)
+		{
+			OverCurMaturationTime = 0;
+			if(OverCurDematurationTime > 100)			// 1sec
+			{
+				OverCurDematurationTime = 0;
+
+				/* Signal clearance confirmation */
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_MTROVERCURRENT, DEM_TEST_PASS);
+				DiagInput.D11_CurrentSensor = 0;
+			}
+		}
+		else
+		{
+			OverCurMaturationTime = 0;
+			OverCurDematurationTime = 0;
+		}
+	}
+	else
+	{
+		OverCurMaturationTime = 0;
+		OverCurDematurationTime = 0;
+
+		if(Ampare < UnderMaturationAmpare)					//1 Under Current(Actuator가 동작하지 않아도 0.5A이하로 나올수 있기때문에
+		{																						//1 Under current check는 동작중에만 한다.)
+			UnderCurDematurationTime = 0;
+			if(UnderCurMaturationTime > 20)				// 200ms
+			{
+				UnderCurMaturationTime = 0;
+
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_MTRUNDERCURRENT].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_MTRUNDERCURRENT, DEM_TEST_FAIL);
+				}
+
+				DiagInput.D11_CurrentSensor = 1;
+			}
+		}
+		else if(Ampare > UnderDematurationAmpare)
+		{
+			UnderCurMaturationTime = 0;
+			if(UnderCurDematurationTime > 20)			// 200ms
+			{
+				UnderCurDematurationTime = 0;
+
+				/* Signal clearance confirmation */
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_MTRUNDERCURRENT, DEM_TEST_PASS);
+
+				DiagInput.D11_CurrentSensor = 0;
+			}
+		}
+		else
+		{
+			UnderCurMaturationTime = 0;
+			UnderCurDematurationTime = 0;
+		}
+	}
+}
+
+/********************************************************************************
+* Function Name		: CalculationForDifference
+* Description			: This function calculation the defference between Data_A and Data_B.
+* input						: uword Data_A, uword Data_B
+* return					: uword Defferencde value
+********************************************************************************/
+uword CalculationForDifference(uword Data_A,uword Data_B)
+{
+uword ReturnValue;
+
+	if(Data_A > Data_B)
+	{
+		ReturnValue = Data_A - Data_B;
+	}
+	else
+	{
+		ReturnValue = Data_B - Data_A;
+	}
+
+	return ReturnValue;
+}
+
+/********************************************************************************
+* Function Name		: HallSensor_Diag
+* Description			: Hall sensor diagnostic for Open/Short/failure. 
+										when actuator is running.
+* input						: None
+* return					: None
+* Comment					: 
+********************************************************************************/
+uword HallMaturationTime = 0,HallDematurationTime = 0;
+uword	PreviousHallCount = 0;
+int8_t	HallMaturationCycle = 2;
+void HallSensor_Diag(void)
+{
+	uword	HallDifference;
+	float	Ampare,Temp = 0;
+
+	Temp = ShuntCur_MonitorL;
+	Ampare = Temp * AmpareFactor;
+	
+	if(((PreviousParkBrakeStatus ==3) && (fActuatorApplying)) ||					//1 If actuator is under progress.
+		((PreviousParkBrakeStatus ==1) && (fActuatorReleasing)))
+	{
+		if(!fHallFault_Mutex)
+		{
+			fHallFault_Mutex = 1;
+			PreviousHallCount = PlusHall;
+		}
+
+		if(Ampare < MotorSaturationAmpare)						// Hall sensor diagnosis could be diagnose when motor current is only lower than 17A.
+		{
+			HallDifference = CalculationForDifference(PlusHall,PreviousHallCount);
+			if(HallDifference < 10)											//1 17A까지제어하면 Difference가 50이상임(14Dec2018)@Russia
+			{
+				HallDematurationTime = 0;
+			}
+			else
+			{
+				HallMaturationTime = 0;
+			}
+
+			if(HallMaturationTime > 50)						// 500ms
+			{
+				HallMaturationTime = 0;
+				--HallMaturationCycle;
+			}
+			
+			if(HallDematurationTime > 100)				// 1sec
+			{
+				HallDematurationTime = 0;
+				++HallMaturationCycle;
+			}
+
+			if(HallMaturationCycle > 2)
+			{
+				HallMaturationCycle = 2;
+				DiagInput.D10_HallSensor = 0;
+				
+				/* Signal clearance confirmation */
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_HALLSENOPENSHORT, DEM_TEST_PASS);
+			}
+			else if(HallMaturationCycle < 0)
+			{
+				HallMaturationCycle = -1;
+				DiagInput.D10_HallSensor = 1;
+				
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_HALLSENOPENSHORT].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_HALLSENOPENSHORT, DEM_TEST_FAIL);
+				}
+			}
+		}
+		else
+		{
+			HallMaturationTime = 0;
+			HallDematurationTime = 0;
+		}
+	}
+	else
+	{
+		HallMaturationTime = 0;
+		HallDematurationTime = 0;
+		fHallFault_Mutex = 0;
+	}
+}
+
+/********************************************************************************
+* Function Name		: ForceSensor_Diag
+* Description			: Force sensor diagnostic for signal stuck. 
+										when actuator is running.
+* input						: None
+* return					: None
+********************************************************************************/
+uword ForceStuckMaturationTime = 0,ForceStuckDematurationTime = 0;
+uword	PastForceValue = 0;
+ubyte	Cnt_ForceStuck = 0,ForceStuck_Step = 0;
+
+void ForceStuck_Diag(void)
+{
+	uword ForceDifference = 0;
+
+	if((PreviousParkBrakeStatus ==1) && (fActuatorReleasing) 
+		|| (PreviousParkBrakeStatus ==3) && (fActuatorApplying))				// When actuator is moving.
+	{
+		if(!fForceStuck_Mutex)
+		{
+			fForceStuck_Mutex = 1;
+			Cnt_ForceStuck = 0;
+			PastForceValue = BoardState.ForceSensorValue;
+		}
+		else
+		{
+			if(Cnt_ForceStuck > 9)				// 100ms after Force Sensor data Backup
+			{
+				Cnt_ForceStuck = 0;
+
+				if(ForceStuck_Step < 7)			// When force sensor value difference is bigger than 10 times while 6 cycle( 1cycle per 100ms),
+				{
+					ForceDifference = CalculationForDifference(BoardState.ForceSensorValue,PastForceValue);
+					if(ForceDifference < 10)
+					{
+						ForceStuckDematurationTime = 0;
+					}
+					else
+					{
+						ForceStuckMaturationTime = 0;
+						++ForceStuck_Step;
+					}
+				}
+				else
+				{
+					ForceStuckMaturationTime = 0;
+				}
+
+				PastForceValue = BoardState.ForceSensorValue;
+			}
+
+			if(ForceStuckMaturationTime > 50)							//1 Matuation Time 500ms
+			{
+				Diag_Force |= FsOpen;
+
+				/* Signal clearance confirmation */
+				if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_FORCESENSIGSTUCK].ubDtcStatusMask, DEM_SM_TF, u8))
+				{
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_FORCESENSIGSTUCK, DEM_TEST_FAIL);
+				}
+			}
+
+			if(ForceStuckDematurationTime > 100)					//1 Dematuration Time 1sec
+			{
+				Diag_Force &= ~FsOpen;
+
+				/* Signal clearance confirmation */
+				DEM_DtcTestStatus(DEM_DTC_IDX_DTC_FORCESENSIGSTUCK, DEM_TEST_PASS);
+			}
+		} 
+	}
+	else
+	{
+		PastForceValue = 0;
+		fForceStuck_Mutex = 0;
+		ForceStuckMaturationTime = 0;
+		ForceStuckDematurationTime = 0;
+	}
+}
+
+/********************************************************************************
+* Function Name		: EpbPerformance_Diag
+* Description			: EPB Performance diagnosis means that diagnosing while actuating
+										for no load/cable disconnection
+										
+* input						: None
+* return					: None
+********************************************************************************/
+uword Cnt_EpbPerformance = 0;
+
+void EpbPerformance_Diag(void)
+{
+float Ampare,Temp = 0;
+
+	if((PreviousParkBrakeStatus ==3) && (fActuatorApplying))				// When actuator is applying under progress.
+	{
+		if((!DiagInput.D20_EPB_Stuck) && (!DiagInput.D9_ForceSensor) && (!DiagInput.D11_CurrentSensor))					// When all sensor is not fault & no stuck.
+		{
+			if(!fPerformanceMutex)
+			{
+				fPerformanceMutex = 1;
+				Cnt_EpbPerformance = 0;
+
+				Temp = ShuntCur_MonitorL;
+				Ampare = Temp * AmpareFactor;
+			}
+
+			if(Cnt_EpbPerformance > 9)				// 100ms
+			{
+				Cnt_EpbPerformance = 0;
+				fPerformanceMutex = 0;
+
+				if(Ampare < PerformCheckCurrent)
+				{
+					++PerformCurrent_Cnt;
+				}
+			}
+
+			if((Diag_Force == FsOpen) && (PerformCurrent_Cnt > 5))			//Current 5A미만인 경우가 5번 이상이면서, Force sensor값이 변화가없는 경우.
+			{
+				PerformDematurationTime = 0;
+			}
+			else
+			{
+				PerformMaturationTime = 0;
+			}
+
+			if(PerformMaturationTime > 23)								//1 Maturation Time 230ms
+			{
+				PerformMaturationTime = 0;
+				--PerformMaturationCycle;
+				
+				if(PerformMaturationCycle < 0)					// Maturation cyele		//Andrey Zakharov가 3times를 1로 변경하라하여주석처리함.
+				{
+					PerformMaturationCycle = 0;
+					DiagInput.D1_Actuator = 1;
+					/* Signal clearance confirmation */
+					if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_NOLOADCABLDISCON].ubDtcStatusMask, DEM_SM_TF, u8))
+					{
+						DEM_DtcTestStatus(DEM_DTC_IDX_DTC_NOLOADCABLDISCON, DEM_TEST_FAIL);
+					}
+				}
+			}
+
+			if(PerformDematurationTime > 21)							//1 Dematuration Time 210ms
+			{
+				PerformDematurationTime = 0;
+				++PerformMaturationCycle;
+				
+				if(PerformMaturationCycle > 2)
+				{
+					PerformMaturationCycle = 2;
+					DiagInput.D1_Actuator = 0;
+					/* Signal clearance confirmation */
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_NOLOADCABLDISCON, DEM_TEST_PASS);
+				}
+			}
+		}
+	}
+	else
+	{
+		fPerformanceMutex = 0;
+		PerformCurrent_Cnt = 0;
+		PerformMaturationTime = 0;
+		PerformDematurationTime = 0;
+		Cnt_EpbPerformance = 0;
+	}
+}
+
+/********************************************************************************
+* Function Name		: EpbStuck_Dig
+* Description			: EPB stuck diagnostic when actuator is running.
+* input						: None
+* return					: None
+********************************************************************************/
+uword StuckMaturationTime = 0,StuckDematurationTime = 0,Cnt_EpbStuck = 0;
+uword	StuckCurrent_Cnt = 0,StuckPastHall = 0;
+int8_t	StuckMaturationCycle = 2;
+
+void EpbStuck_Dig(void)
+{
+	float Ampare,Temp = 0;
+	uword HallDifference = 0;
+
+	if((PreviousParkBrakeStatus ==1) && (fActuatorReleasing) 
+		|| (PreviousParkBrakeStatus ==3) && (fActuatorApplying))				// When actuator is moving.
+	{
+		if((!DiagInput.D10_HallSensor) && (!DiagInput.D11_CurrentSensor))					// When hall sensor is not fault
+		{
+			if(!fEpbStuckMutex)
+			{
+				fEpbStuckMutex = 1;
+				Temp = ShuntCur_MonitorL;
+				Ampare = Temp * AmpareFactor;
+				StuckPastHall = PlusHall;
+				Cnt_EpbStuck = 0;
+			}
+
+			if(Cnt_EpbStuck > 9)
+			{
+				Cnt_EpbStuck = 0;
+				fEpbStuckMutex = 0;
+				HallDifference = CalculationForDifference(PlusHall,StuckPastHall);
+
+				if(Ampare > MotorSaturationAmpare)
+				{
+					++StuckCurrent_Cnt;
+				}
+			}
+
+			if((StuckCurrent_Cnt > 10) && (HallDifference < 20))			//Hall은 변화 없고,Current 값만큰 경우.
+			{
+				StuckDematurationTime = 0;
+			}
+			else
+			{
+				StuckMaturationTime = 0;
+			}
+
+			if(StuckMaturationTime > 25)							//1 Maturation Time 250ms
+			{
+				StuckMaturationTime = 0;
+
+				if(!fStuckFault_Mutex)
+				{
+					fStuckFault_Mutex = 1;
+					--StuckMaturationCycle;
+				}
+				
+//				if(StuckMaturationCycle < 0)					// Maturation cyele
+				{
+					StuckMaturationCycle = -1;
+					DiagInput.D20_EPB_Stuck = 1;
+					/* Signal clearance confirmation */
+					if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_ACTUATORSTUCK].ubDtcStatusMask, DEM_SM_TF, u8))
+					{
+						DEM_DtcTestStatus(DEM_DTC_IDX_DTC_ACTUATORSTUCK, DEM_TEST_FAIL);
+					}
+				}
+			}
+
+			if(StuckDematurationTime > 23)						//1 Dematuration Time 230ms
+			{
+				StuckDematurationTime = 0;
+
+				if(fStuckFault_Mutex)
+				{
+					fStuckFault_Mutex = 0;
+					++StuckMaturationCycle;
+				}
+				
+//				if(StuckMaturationCycle > 2)
+				{
+					StuckMaturationCycle = 2;
+					DiagInput.D20_EPB_Stuck = 0;
+					/* Signal clearance confirmation */
+					DEM_DtcTestStatus(DEM_DTC_IDX_DTC_ACTUATORSTUCK, DEM_TEST_PASS);
+				}
+			}
+		}
+	}
+	else
+	{
+		fEpbStuckMutex = 0;
+		StuckMaturationTime = 0;
+		StuckDematurationTime = 0;
+		StuckPastHall = 0;
+	}
+
+}
+
+/********************************************************************************
+* Function Name		: VinNumReadAtFlash
+* Description			: Stored VIN read from internal flash.
+* input						: None
+* return					: None
+* comment					: 
+********************************************************************************/
+ubyte Rx_VIN[17]={0xFF,0xFF,0xFF,0xFF,0xFF,
+									0xFF,0xFF,0xFF,0xFF,0xFF,
+									0xFF,0xFF,0xFF,0xFF,0xFF,
+									0xFF,0xFF
+								 };
+ubyte Stored_VIN[17]={0xFF,0xFF,0xFF,0xFF,0xFF,
+									0xFF,0xFF,0xFF,0xFF,0xFF,
+									0xFF,0xFF,0xFF,0xFF,0xFF,
+									0xFF,0xFF
+								 };
+
+ubyte ubVinAddress = 0,ubStepCheck = 0;
+ubyte *VIN_udsData;
+uword VIN_RxTime;
+/********************************************************************************
+* Function Name		: VIN_LearningAnswer
+* Description			: VIN learning request response
+* input						: Respose type
+* return					: None
+* comment					: 
+********************************************************************************/
+void VIN_LearningAnswer(ubyte Response)
+{
+	DiagTxData[0] = 0x05;
+	DiagTxData[1] = 0x71;
+	DiagTxData[2] = 0x01;
+	DiagTxData[3] = 0x13;
+	DiagTxData[4] = 0x00;
+	DiagTxData[5] = Response;
+
+	UDS_LongRequestEnd(0, DiagTxData, UDS_ACK);
+	IL_u32Wr_Diag_From_EPB_Sig(DiagTxData);
+	COM_SendFrameDirect(COM_FRAME_IDX_Diag_From_EPB);
+
+//UDS_LongRequestEnd(5, VIN_udsData, UDS_ACK);
+}
+
+/********************************************************************************
+* Function Name		: VehicleIdentifierNumber_Receiving
+* Description			: VIN receiving function
+* input						: None
+* return					: receiving status
+* comment					: 
+********************************************************************************/
+ubyte VehicleIdentifierNumber_Receiving(void)
+{
+	ubyte	retVal;
+
+	retVal = 0;
+	
+	if(IL_FlgTst_VIN_Addressing())
+	{
+		VIN_RxTime = 0;
+		IL_u8Rd_VIN_Addressing(&ubVinAddress);
+		switch(ubVinAddress)
+		{
+			case 0:
+				IL_u8Rd_VIN_Char1(&Rx_VIN[0]);
+				IL_u8Rd_VIN_Char2(&Rx_VIN[1]);
+				IL_u8Rd_VIN_Char3(&Rx_VIN[2]);
+				IL_u8Rd_VIN_Char4(&Rx_VIN[3]);
+				IL_u8Rd_VIN_Char5(&Rx_VIN[4]);
+				IL_u8Rd_VIN_Char6(&Rx_VIN[5]);
+				IL_u8Rd_VIN_Char7(&Rx_VIN[6]);
+				ubStepCheck |= 0x02;
+			break;
+			case 1:
+				IL_u8Rd_VIN_Char8(&Rx_VIN[7]);
+				IL_u8Rd_VIN_Char9(&Rx_VIN[8]);
+				IL_u8Rd_VIN_Char10(&Rx_VIN[9]);
+				IL_u8Rd_VIN_Char11(&Rx_VIN[10]);
+				IL_u8Rd_VIN_Char12(&Rx_VIN[11]);
+				IL_u8Rd_VIN_Char13(&Rx_VIN[12]);
+				IL_u8Rd_VIN_Char14(&Rx_VIN[13]);
+				ubStepCheck |= 0x04;
+			break;
+			case 2:
+				IL_u8Rd_VIN_Char15(&Rx_VIN[14]);
+				IL_u8Rd_VIN_Char16(&Rx_VIN[15]);
+				IL_u8Rd_VIN_Char17(&Rx_VIN[16]);
+				ubStepCheck |= 0x08;
+			break;
+			default:break;
+		}
+		
+		if(ubStepCheck == 0x0E)				//After all VIN is received.
+		{
+			retVal = 1;
+			ubStepCheck = 0;
+		}
+	}
+
+	return retVal;
+}
+
+/********************************************************************************
+* Function Name		: InitialParameterSet
+* Description			: Calibration parametter depends on th VIN
+* input						: None
+* return					: None
+* comment					: 
+********************************************************************************/
+ubyte VehicleID = 0xff;
+void InitialParameterSet(void)
+{
+	switch(VehicleID)
+	{
+		case SedanNonArmored:						//1 Boby 0 start
+		// Parameter Set 2
+			CalibrationDatas = CalibrationDatas2;
+		break;
+		case SedanArmored:
+		// Parameter Set 3
+			CalibrationDatas = CalibrationDatas3;
+		break;
+		case LimoArmoredV12:
+		// Parameter Set 1
+			CalibrationDatas = CalibrationDatas1;
+		break;
+		case LimoArmoredV8:
+		// Parameter Set 1
+			CalibrationDatas = CalibrationDatas1;
+		break;
+		case Cabrio:										//1 Body 0 end
+		// Parameter Set 2
+			CalibrationDatas = CalibrationDatas2;
+		break;
+		case SuvNonArmored:							//1 Boby 1 start
+		// Parameter Set 2
+			CalibrationDatas = CalibrationDatas2;
+		break;
+		case SuvArmored:
+		// Parameter Set 3
+			CalibrationDatas = CalibrationDatas3;
+		break;													//1 Body 1 end
+		
+		case MpvNonArmored4Seats:				//1 Boby 2 start
+		// Parameter Set 2
+			CalibrationDatas = CalibrationDatas2;
+		break;
+		case MpvArmored8Seats:
+		// Parameter Set 1
+			CalibrationDatas = CalibrationDatas1;
+		break;
+		case MpvNonArmored9Seats:
+		// Parameter Set 2
+			CalibrationDatas = CalibrationDatas2;
+		break;
+		case MpvArmored9Seats:
+		// Parameter Set 1
+			CalibrationDatas = CalibrationDatas1;
+		break;
+		case MpvArmored4Seats:
+		// Parameter Set 1
+			CalibrationDatas = CalibrationDatas1;
+		break;													//1 Body 2 end
+
+		case VinReserved02:
+		case VinReserved06:
+		case VinReserved07:
+		case VinReserved10:
+		case VinReserved11:
+		case VinReserved14:
+		case VinReserved15:
+		case VinReserved16:
+		case VinReserved17:
+		case VinReserved24:
+		case VinReserved25:
+		case VinReserved26:
+			// Default Parameter Set 1
+			CalibrationDatas = CalibrationDatas1;
+		break;
+		
+		default:
+			// Default Parameter Set 1
+			CalibrationDatas = CalibrationDatas1;
+		break;
+	}
+
+	/* CCP Parameter Initial Value setting */
+	initializeCal();
+}
+
+/********************************************************************************
+* Function Name		: VehicleBodyAndType_Checking
+* Description			: Vehicle Body & Type checking
+* input						: None
+* return					: None
+* comment					: 
+********************************************************************************/
+ubyte VehicleBodyAndType_Checking(ubyte LowByte,ubyte HighByte)
+{
+	ubyte	RetVal,VehicleBody = 0,VehicleType = 0;
+
+	RetVal = 0;
+	VehicleBody = LowByte & 0x0F;
+	VehicleType = HighByte & 0x0F;
+	VehicleID = ((VehicleBody << 4) | VehicleType);
+	InitialParameterSet();
+	
+	switch(VehicleID)
+	{
+		case SedanNonArmored:						//1 Boby 0 start
+		case SedanArmored:
+		case LimoArmoredV12:
+		case LimoArmoredV8:
+		case Cabrio:										//1 Body 0 end
+		case SuvNonArmored:							//1 Boby 1 start
+		case SuvArmored:								//1 Body 1 end
+		case MpvNonArmored4Seats:				//1 Boby 2 start
+		case MpvArmored8Seats:
+		case MpvNonArmored9Seats:
+		case MpvArmored9Seats:
+		case MpvArmored4Seats:					//1 Body 2 end
+		break;
+		
+		case VinReserved02:
+		case VinReserved06:
+		case VinReserved07:
+		case VinReserved10:
+		case VinReserved11:
+		case VinReserved14:
+		case VinReserved15:
+		case VinReserved16:
+		case VinReserved17:
+		case VinReserved24:
+		case VinReserved25:
+		case VinReserved26:
+			RetVal = VINReserved;
+		break;
+		
+		default:
+			RetVal = InvalidVINReceived;
+		break;
+	}
+	
+	return RetVal;
+}
+
+/********************************************************************************
+* Function Name		: VehicleIdentifierNumber_Checking
+* Description			: VIN checking
+* input						: None
+* return					: None
+* comment					: 
+********************************************************************************/
+ubyte VehicleIdentifierNumber_Checking(void)
+{
+	ubyte	RetVal;
+
+	RetVal = 0;
+	if(((Rx_VIN[3] > 0x2F) && (Rx_VIN[3] < 0x3A)) &&
+		 ((Rx_VIN[4] > 0x2F) && (Rx_VIN[4] < 0x3A)))
+	{
+		RetVal = VehicleBodyAndType_Checking(Rx_VIN[3],Rx_VIN[4]);
+	}
+	else
+	{
+		RetVal = InvalidVINReceived;
+		// Default Parameter Set 1
+		CalibrationDatas = CalibrationDatas1;
+
+		/* CCP Parameter Initial Value setting */
+		initializeCal();
+	}
+
+	return RetVal;
+}
+
+/********************************************************************************
+* Function Name		: StoreVinToEeprom_Prg
+* Description			: VIN Storing
+* input						: None
+* return					: None
+* comment					: 
+********************************************************************************/
+ubyte	VinStoreStep = 0,Cnt_StoreVin = 0;
+uword	StoreTemp;
+
+void StoreVinToEeprom_Prg(void)
+{
+	ubyte	i;
+	
+	if(fVinStoreRequest)
+	{
+		if(Cnt_StoreVin > 1)
+		{
+			Cnt_StoreVin = 0;
+
+			StoreTemp = Stored_VIN[VinStoreStep+1];
+			StoreTemp = StoreTemp << 8;
+			StoreTemp |= Stored_VIN[VinStoreStep];
+			SPI_EEP_Send_X16((VIN_AddressOffset+VinStoreStep),StoreTemp,EWEN_CMD);
+
+			VinStoreStep += 2;
+			if(VinStoreStep > 16)
+			{
+				fVinStoreRequest = 0;
+			}
+		}
+	}
+	else
+	{
+		Cnt_StoreVin = 0;
+	}
+}
+
+/********************************************************************************
+* Function Name		: VehicleIdentifierNumber_Learning
+* Description			: VIN learning function
+* input						: None
+* return					: None
+* comment					: Below two kind of failure is not define yet.
+										1. VIN has been fully received and received VIN is not identical to that stored.
+										2. VIN ha not yet been written.
+********************************************************************************/
+void VehicleIdentifierNumber_Learning(void)
+{
+ubyte	i,VIN_Mismatch,VIN_0xFF,VIN_0x00,VIN_Respose;
+
+//	VinNumReadAtFlash();														// Stored VIN read at internal Flash.
+	
+	if(VIN_RxTime < VehicleID_RxTime)
+	{
+		if(fUDS_VIN_Lean)
+		{
+			if(VehicleIdentifierNumber_Receiving())			// VIN receiving through the VIN learning.
+			{
+				fUDS_VIN_Lean = 0;
+				VIN_RxTime = 10000;
+				VIN_Respose = VehicleIdentifierNumber_Checking();
+				VIN_LearningAnswer(VIN_Respose);
+
+				if(VIN_Respose == RoutinePassed)
+				{
+					for(i=0;i<17;i++)
+					{
+						Stored_VIN[i] = Rx_VIN[i];
+					}
+
+					SSMInput.SSMInDoesVinMatch = 1;				// if 1, VIN mis-match
+					fVinStoreRequest = 1;
+				}
+			}
+		}
+	}
+	else																						//1 After VIN Learning timeout
+	{
+		VIN_RxTime = 10000;
+		if(fUDS_VIN_Lean)
+		{
+			fUDS_VIN_Lean = 0;
+			VIN_LearningAnswer(TestTimeoutBeforVINReceived);			// Test timeout response.
+		}
+	}
+
+	if(!fUDS_VIN_Lean)
+	{
+		VIN_Mismatch = 0;
+		VIN_0xFF = 0;
+		if(VehicleIdentifierNumber_Receiving())									// VIN receiving without VIN learning.
+		{
+			if(((Rx_VIN[3] > 0x2F) && (Rx_VIN[3] < 0x3A)) &&
+		 			((Rx_VIN[4] > 0x2F) && (Rx_VIN[4] < 0x3A)))
+			{
+				for(i=0;i<17;i++)
+				{
+					if(Stored_VIN[i] != Rx_VIN[i])
+					{
+						VIN_Mismatch = 1;																// VIN mismath
+					}
+
+					if(Stored_VIN[i] == 0xFF)
+					{
+						++VIN_0xFF;
+					}
+
+					if(Stored_VIN[i] == 0x00)
+					{
+						++VIN_0x00;
+					}
+				}
+
+				if((VIN_0xFF > 16) || (VIN_0x00 > 16))																			// There are no stored VIN.
+				{
+					/* Signal clearance confirmation */
+					if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_VINNUMFAILURE].ubDtcStatusMask, DEM_SM_TF, u8))
+					{
+						DEM_DtcTestStatus(DEM_DTC_IDX_DTC_VINNUMFAILURE, DEM_TEST_FAIL);
+					}
+					
+					// Default Parameter Set 1
+					CalibrationDatas = CalibrationDatas1;
+
+					/* CCP Parameter Initial Value setting */
+					initializeCal();
+
+					SSMInput.SSMInDoesVinMatch = 0;				// if 0, VIN mis-match
+				}
+				else if(VIN_Mismatch)																	// Mis-matched
+				{
+					/* Signal clearance confirmation */
+					if(NCS_TST_BIT_RESET(m_astDtcLocalStatus[DEM_DTC_IDX_DTC_VINNUMFAILURE].ubDtcStatusMask, DEM_SM_TF, u8))
+					{
+						DEM_DtcTestStatus(DEM_DTC_IDX_DTC_VINNUMFAILURE, DEM_TEST_FAIL);
+					}
+					
+					// Default Parameter Set 1
+					CalibrationDatas = CalibrationDatas1;
+					
+					/* CCP Parameter Initial Value setting */
+					initializeCal();
+					SSMInput.SSMInDoesVinMatch = 0;				// if 0, VIN mis-match
+				}
+				else
+				{
+					VehicleBodyAndType_Checking(Rx_VIN[3],Rx_VIN[4]);
+				}
+			}
+			else
+			{
+				// Default Parameter Set 1
+				CalibrationDatas = CalibrationDatas1;
+
+				/* CCP Parameter Initial Value setting */
+				initializeCal();
+			}
+		}
+		else
+		{
+			InitialParameterSet();
+		}
+	}
+
+	StoreVinToEeprom_Prg();
+}
+
+/********************************************************************************
+* Function Name		: EepromWriteAccordingToDiag
+* Description			: 
+* input						: None
+* return					: None
+********************************************************************************/
+ubyte	EdepromWriteDelay = 0;
+ubyte	WriteFingerStep = 0,AddAssign = 0;
+
+void EepromWriteAccordingToDiag(void)
+{
+	uword	WriteData = 0;
+	
+	if(fFingerPrintWrote)
+	{
+		if(EdepromWriteDelay > 1)
+		{
+			EdepromWriteDelay = 0;
+
+			WriteData = ubFingerprint[WriteFingerStep];
+			WriteData = WriteData << 8;
+			WriteData |= ubFingerprint[WriteFingerStep+1];
+			SPI_EEP_Send_X16((Fingerprint_AddOffset + AddAssign),WriteData,EWEN_CMD);
+
+			WriteFingerStep += 2;
+			++AddAssign;
+			if(WriteFingerStep > 10)
+			{
+				fFingerPrintWrote = 0;
+				
+				m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB][0] = 0x03;
+        m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB][1] = 0x6E;
+        m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB][2] = 0xF1;
+        m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB][3] = 0x5A;
+        m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB][4] = 0x00;
+        m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB][5] = 0x00;
+        m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB][6] = 0x00;
+        m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB][7] = 0x00;
+
+				UDS_LongRequestEnd(0, m_aaubComFrameData[COM_FRAME_IDX_Diag_From_EPB], UDS_ACK);
+				
+				COM_SendFrameDirect(COM_FRAME_IDX_Diag_From_EPB);
+			}
+		}
+	}
+	else
+	{
+		AddAssign = 0;
+		WriteFingerStep = 0;
+		EdepromWriteDelay = 0;
+	}
+}
+
+/********************************************************************************
+* Function Name		: Diag_Management_Prg
+* Description			: Diagnostics function sequential management.
+* input						: None
+* return					: None
+********************************************************************************/
+ubyte	Diag_Step = 0,BootWriteAdd[4],StepDTC = 0,DTC_DataIndex = 0,DTC_StoreReqIndex = 0;
+SaveDtcType	stSaveDTC;
+void Diag_Management_Prg(void)
+{
+	ubyte	i,WriteAdd = 0;
+	uword	ReadData = 0,WriteData = 0;
+
+	switch(Diag_Step)
+	{
+		case 0:
+			BatteryVoltage_Check();
+		break;
+		case 1:
+			BoardTemperature_Check();
+		break;
+		case 2:
+			DTC_ForceSensor_ShortCheck();
+		break;
+		case 3:
+			DTC_MotorDriver_Check();
+		break;
+		case 4:
+			OverUnderCurrent_Diag();
+		break;
+		case 5:
+			HallSensor_Diag();
+		break;
+		case 6:
+			ForceStuck_Diag();
+		break;
+		case 7:
+			EpbPerformance_Diag();
+		break;
+		case 8:
+			EpbStuck_Dig();
+		break;
+		case 9:
+			if(ECU_Reset_Bit)
+			{
+				if(Cnt_ResetDelay > 100)
+				{
+					Cnt_ResetDelay = 0;
+					
+					/* deactivate interrupts */
+			    APP_InterruptDisable();
+					
+					BoardPerformReset(PLATFORMS_SW_RESET);
+				}
+				else
+				{
+					if(fBootWriteRequest)
+					{
+						if(Cnt_ResetDelay < 20)
+						{
+							if(!Mutex_BootWrite1)
+							{
+								Mutex_BootWrite1 = 1;
+								WriteData = BootWriteAdd[0];
+								WriteData = WriteData << 8;
+								WriteData |= BootWriteAdd[1];
+								SPI_EEP_Send_X16(EEP_BootWriteAdd,WriteData,EWEN_CMD);
+							}
+						}
+						else if(Cnt_ResetDelay < 40)
+						{
+							if(!Mutex_BootWrite2)
+							{
+								Mutex_BootWrite2 = 1;
+								WriteData = BootWriteAdd[2];
+								WriteData = WriteData << 8;
+								WriteData |= BootWriteAdd[3];
+								SPI_EEP_Send_X16((EEP_BootWriteAdd+1),WriteData,EWEN_CMD);
+							}
+						}
+					}
+					
+					if(!fECU_Reset)
+					{
+						fECU_Reset = 1;
+						SPI_EEP_Send_X16(UDS_ResetECU_CheckAdd,(0x5A00U | SPR_Req),EWEN_CMD);
+					}
+				}
+			}
+			else
+			{
+				Mutex_BootWrite1 = 0;
+				Mutex_BootWrite2 = 0;
+				Cnt_ResetDelay = 0;
+				if(!fECU_ResetErase)
+				{
+					fECU_ResetErase = 1;
+					ReadData = SPI_EEP_Read_X16(UDS_ResetECU_CheckAdd);
+					if(ReadData & 0x5A00U)
+					{
+						if(!(ReadData & 0x0080U))
+						{
+							DiagTxData[0] = 0x02;
+							DiagTxData[1] = 0x51;
+							DiagTxData[2] = 0x01;
+							IL_u32Wr_Diag_From_EPB_Sig(DiagTxData);
+							COM_SendFrameDirect(COM_FRAME_IDX_Diag_From_EPB);
+						}
+
+						SPI_EEP_Send_X16(UDS_ResetECU_CheckAdd,0x00U,EWEN_CMD);
+					}
+				}
+			}
+		break;
+		case 10:
+			/* Fingerprint Data Write to EEPROM */
+			EepromWriteAccordingToDiag();
+		break;
+		default:
+			Diag_Step = 0;
+		break;
+	}
+
+	if(++Diag_Step > 10)
+	{
+		Diag_Step = 0;
+	}
+
+	if(DTC_WriteTime > 1)				//20ms
+	{
+		DTC_WriteTime = 100;			// 대기 상태에서 20ms초과시에는 바로 Write할수 있도록하기 위한 값.
+		
+		if(fDTC_EraseAllRequest)		//1 DTC Erase All request processing.
+		{
+			if(!fDTC_ClearAllRequest)
+			{
+				for(i=0;i<DEM_DTC_NUMBER;i++)
+				{
+					stSaveDTC.ubStoreReq_DTC[i] = 0;
+					stSaveDTC.ubData_DTC[i] = 0;
+				}
+				fDTC_ClearAllRequest = 1;
+			}
+
+			WriteData = stSaveDTC.ubData_DTC[DTC_DataIndex];
+			WriteData = WriteData << 8;
+			WriteData |= stSaveDTC.ubData_DTC[DTC_DataIndex+1];
+			
+			SPI_EEP_Send_X16((ubyte)(DTC_StoreAddOffset+StepDTC),(uint16_t)WriteData,EWEN_CMD);
+			DTC_WriteTime = 0;			// EEPROM Write후 20ms delay를 위해.
+			DTC_DataIndex += 2;
+			if(++StepDTC > (DEM_DTC_NUMBER / 2))
+			{
+				fDTC_EraseAllRequest = 0;
+			}
+		}
+		else
+		{
+			StepDTC = 0;
+			DTC_DataIndex = 0;
+			DTC_WriteTime = 0;			// EEPROM Write후 20ms delay를 위해.
+			if(stSaveDTC.ubStoreReq_DTC[DTC_StoreReqIndex] == 0xA5)		//1 DTC individual storage processing.
+			{
+				WriteAdd = DTC_StoreReqIndex / 2;
+
+				if((DTC_StoreReqIndex % 2))
+				{
+					WriteData = stSaveDTC.ubData_DTC[DTC_StoreReqIndex-1];
+					WriteData = WriteData << 8;
+					WriteData |= stSaveDTC.ubData_DTC[DTC_StoreReqIndex];
+				}
+				else
+				{
+					WriteData = stSaveDTC.ubData_DTC[DTC_StoreReqIndex];
+					WriteData = WriteData << 8;
+					WriteData |= stSaveDTC.ubData_DTC[DTC_StoreReqIndex+1];
+				}
+				
+				SPI_EEP_Send_X16((ubyte)(DTC_StoreAddOffset+WriteAdd),(uint16_t)WriteData,EWEN_CMD);
+				
+				stSaveDTC.ubStoreReq_DTC[DTC_StoreReqIndex] = 0;				// DTC Store request clear.
+			}
+
+			++DTC_StoreReqIndex;
+			if(DTC_StoreReqIndex > DEM_DTC_NUMBER)
+			{
+				DTC_StoreReqIndex = 0;
+			}
+		}
+	}
+}
+
