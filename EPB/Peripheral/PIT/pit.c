@@ -33,31 +33,51 @@
  * BSW Layer
  *===========================================================================*/
 
- void Bsw_PIT0_Init()
+ void Bsw_PIT0_Init(vint32_t LDVAL)
  {
-
+	Mcal_PIT0_Init(LDVAL);
  }
 
  void Bsw_PIT0_Enable(void)
  {
-	
+	Mcal_PIT0_Enable();
  }
 
  void Bsw_PIT0_Disable(void)
  {
-	
+	Mcal_PIT0_Disable();
  }
 
  void Bsw_PIT_CH0_ISR(void)
  {
-	
+	Mcal_PIT_CH0_ISR();
  }
  /*===========================================================================
  * FS Layer
  *===========================================================================*/
+ void Fs_PIT0_Init(vint32_t LDVAL)
+ {
+	Bsw_PIT0_Init(LDVAL);
+ }
+
+ void Fs_PIT0_Enable(void)
+ {
+	Fs_PIT0_Enable();
+ }
+
+  void Fs_PIT0_Disable(void)
+ {
+	Fs_PIT0_Disable();
+ }
+
+  void Fs_PIT_CH0_ISR(void)
+ {
+	Fs_PIT_CH0_ISR();
+ }
  /*===========================================================================
  * ASW Layer
  *===========================================================================*/
+
  /*===========================================================================
  * Test용 기존 코드
  *===========================================================================*/
@@ -104,12 +124,7 @@
  *******************************************************************************/
 void PIT0_INIT(vint32_t LDVAL)
 {
-	 PIT.CH[0].LDVAL.R         = LDVAL;
-	 PIT.CH[0].TCTRL.B.TIE     = 1;
-	 PIT.CH[0].TCTRL.B.TEN     = 1;
-	 PIT.PITMCR.B.MDIS         = 0;
-  
-	INTC.PSR[59].R = 0x01;  /* PIT0 interrupt priority level */
+	 Mcal_PIT0_Init(LDVAL);
 }
 
 /*******************************************************************************
@@ -121,8 +136,7 @@ void PIT0_INIT(vint32_t LDVAL)
  *******************************************************************************/
 void PIT0_ENABLE(void)
 {
-    PIT.PITMCR.B.MDIS              = 0;         // enable PIT
-    PIT.PITMCR.B.FRZ               = 1;         // stop timer during debug
+    Mcal_PIT0_Enable();
 }
 
 /*******************************************************************************
@@ -134,12 +148,10 @@ void PIT0_ENABLE(void)
  *******************************************************************************/
 void PIT0_DISABLE(void)
 {
-	 PIT.CH[0].TCTRL.B.TEN     = 0;
+	 Mcal_PIT0_Disable();
 }
-
 
 void PIT_CH0_ISR(void)
 {
-	PIT.CH[0].TFLG.B.TIF    = 1;  // clear flag  
-//	SIU.GPDO[PORT_PIN_A1].R = ~SIU.GPDO[PORT_PIN_A1].R;     // toggle pin PE4
+	Mcal_PIT_CH0_ISR();
 }
