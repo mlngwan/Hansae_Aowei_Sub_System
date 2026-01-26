@@ -9,15 +9,15 @@
 
 Data Packet
 - Sender
-¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡
-¦¢Header		¦¢Task ID	¦¢Data Length		¦¢Data						¦¢Checksum	¦¢
-¦¢(1 Byte)	¦¢(1 Byte)   ¦¢(1 Byte)			¦¢(8 Byte Max)		¦¢(1 Byte)		¦¢
-¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½Header		ï¿½ï¿½Task ID	ï¿½ï¿½Data Length		ï¿½ï¿½Data						ï¿½ï¿½Checksum	ï¿½ï¿½
+ï¿½ï¿½(1 Byte)	ï¿½ï¿½(1 Byte)   ï¿½ï¿½(1 Byte)			ï¿½ï¿½(8 Byte Max)		ï¿½ï¿½(1 Byte)		ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 - Response
-¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡
-¦¢Header		¦¢Task ID	¦¢Rx_Result	¦¢
-¦¢(1 Byte)	¦¢(1 Byte)   ¦¢(1 Byte)	¦¢
-¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡¦¡
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ï¿½ï¿½Header		ï¿½ï¿½Task ID	ï¿½ï¿½Rx_Result	ï¿½ï¿½
+ï¿½ï¿½(1 Byte)	ï¿½ï¿½(1 Byte)   ï¿½ï¿½(1 Byte)	ï¿½ï¿½
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 
 ********************************************************************************
 *******************************************************************************/
@@ -41,6 +41,76 @@ extern Data_Packet InterfaceData[10],FailSafeData[20],DTC_Data[20];
 /* Private function prototypes -----------------------------------------------*/
 
 /* Private functions ---------------------------------------------------------*/
+
+/*===========================================================================
+ * MCAL Layer
+ *===========================================================================*/
+ /*===========================================================================
+ * BSW Layer
+ *===========================================================================*/
+/*===========================================================================
+ * FS Layer
+ *===========================================================================*/
+// RxResult ê° case ë³„ë¡œ response code ë°˜í™˜
+uint8_t Fs_Interface_Make_Response(uint8_t RxResult)
+{
+    uint8_t response_code;
+    uint8_t temp = RxResult & 0x0F;
+
+    switch(temp)
+    {
+        case ReceiveOK:
+            response_code = TxReceiveOK;
+            break;
+        case ChecksumErr:
+            response_code = TxChecksumErr;
+            break;
+        case DataRequest:
+            response_code = TxDataRequest;
+            break;
+        case RepeatRequest:
+            response_code = TxRepeatRequest;
+            break;
+        default:
+            break;
+    }
+    
+    return response_code;
+}
+
+// RxTx == Tx ì¸ ê²½ìš° íŒë‹¨
+uint8_t Fs_Interface_Should_Send_Response(uint8_t RxTx)
+{
+    return (RxTx == Tx) ? 1 : 0;
+}
+
+/*===========================================================================
+ * ASW Layer
+ *===========================================================================*/
+// FS íŒë‹¨ í†µê³¼ ì‹œ ìˆ˜í–‰í•  Task
+void Asw_Interface_Send_Response(uint8_t response_code)
+{
+    Tx_Byte(TxResponse);
+    Tx_Byte(response_code);
+}
+
+// FS íŒë‹¨ë¶€í„° Task ìˆ˜í–‰ê¹Œì§€ì˜ ì „ì²´ íë¦„
+void Asw_Interface_All_Process(uint8_t RxTx, uint8_t RxResult)
+{
+    uint8_t response_code;
+    uint8_t should_send;
+
+    response_code = Fs_Interface_Make_Response(RxResult);
+    should_send = Fs_Interface_Should_Send_Response(RxTx);
+    
+    if(should_send)
+    {
+        Asw_Interface_Send_Response(response_code);
+    }
+}
+ /*===========================================================================
+ * Testìš© ê¸°ì¡´ ì½”ë“œ
+ *===========================================================================*/
 /********************************************************************************
 * Function Name	: TxPacketTransmit
 * Description		: Tx pecket Transmit
@@ -158,64 +228,18 @@ void RxPecketAnalysis(void)
 	}
 }
 #endif
+/*===========================================================================
+ * ë ˆê±°ì‹œ í˜¸í™˜ì„± (ê¸°ì¡´ API ìœ ì§€)
+ *===========================================================================*/
+
 /********************************************************************************
 * Function Name	: ResponseAnalysis
-* Description		: Response Result analysis
+* Description		: Response Result analysis (Legacy Wrapper)
 * input			: uint8_t RxTx for transmit or receive data, uint8_t RxResult for result of transmit or receive
 * return			: None
 ********************************************************************************/
 void ResponseAnalysis(uint8_t RxTx, uint8_t RxResult)
 {
-	uint8_t Temp;
-
-	Temp = RxResult & 0x0F;
-
-	if(RxTx == Tx)
-	{
-		Tx_Byte(TxResponse);
-//		Tx_Byte(RxBuffer[0]);
-	}
-	
-	switch(Temp)
-	{
-		case ReceiveOK:
-			if(RxTx == Tx)
-			{
-				Tx_Byte(TxReceiveOK);
-			}
-			else
-			{
-			}
-		break;
-		case ChecksumErr:
-			if(RxTx == Tx)
-			{
-				Tx_Byte(TxChecksumErr);
-			}
-			else
-			{
-			}
-		break;
-		case DataRequest:
-			if(RxTx == Tx)
-			{
-				Tx_Byte(TxDataRequest);
-			}
-			else
-			{
-			}
-		break;
-		case RepeatRequest:
-			if(RxTx == Tx)
-			{
-				Tx_Byte(TxRepeatRequest);
-			}
-			else
-			{
-			}
-		break;
-		default:
-		break;
-	}
+    /* ìƒˆ ë ˆì´ì–´ í•¨ìˆ˜ í˜¸ì¶œë¡œ ë³€ê²½ */
+    Asw_Interface_All_Process(RxTx, RxResult);
 }
-
