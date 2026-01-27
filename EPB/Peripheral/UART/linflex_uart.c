@@ -31,14 +31,11 @@ static void ConfigureSciPins(void);
 static void Linflex_SetSpeed(void);
 
 /* Private functions ---------------------------------------------------------*/
-
-/********************************************************************************
-* Function Name	: ConfigureSciPins
-* Description		: UART Pin Configuration
-* input			: None
-* return			: None
-********************************************************************************/
-static void ConfigureSciPins( void )
+/*===========================================================================
+ * MCAL Layer
+ *===========================================================================*/
+// UART í•€ ì„¤ì • (SIU PCR ì„¤ì •)
+ static void Mcal_Configure_Pins(void)
 {
    // TX_A output
    /* set PA=1, OBE=1, IBE=0, ODE=0, HYS=0, SRC=0, WPE=0, WPS=0 */
@@ -51,13 +48,8 @@ static void ConfigureSciPins( void )
    SIU.PCR[PAD_LIN0_RXD].B.IBE =0x1;	
 }
 
-/********************************************************************************
-* Function Name	: Linflex_SetSpeed
-* Description		: UART0 Baudrate Configuration according as system clock
-* input			: None
-* return			: None
-********************************************************************************/
-static void Linflex_SetSpeed( void )
+// UART Baudrate ì„¤ì •
+static void Mcal_Linflex_Set_Speed( void )
 {
 #if (FSYS == FSYS_08_MHz)    
 	#if (UART_BAUDRATE == UART_9600_BAUDRATE)    
@@ -233,7 +225,80 @@ static void Linflex_SetSpeed( void )
 #else
 	#error "Please choose correct System clock"
 #endif
-   
+}
+
+// UART ì¸í„°ëŸ½íŠ¸ ê¸°ë°˜ ìˆ˜ì‹  ìŠ¤ìœ„ì¹˜
+void Mcal_LinFlex_0_Int_Config( void )
+{
+	LINFLEX_0.LINIER.B.DRIE = 1;	// Receive Interrupt Enable
+//	LINFLEX_0.LINIER.B.DTIE = 1;	// Transmit Interrupt Enable
+	
+	return;
+}
+
+void Mcal_Linflex_Init_1 (void)
+{
+	LINFLEX_0.LINCR1.R = 0x1;
+	LINFLEX_0.UARTCR.B.UART = 0x1;		//Linflex working in UART mode
+	LINFLEX_0.UARTCR.B.TXEN = 0x1;		// Enable transmission of data now
+	LINFLEX_0.UARTCR.B.RXEN = 0x1;		//Receiver enabled
+	LINFLEX_0.UARTCR.B.WL   = 0x1;		//8 bit data
+	LINFLEX_0.UARTCR.B.PCE  = 0x0;		//Use parity for sub MCU system boot loader
+	LINFLEX_0.UARTCR.B.OP	= 0x0;		// even parity bit use for sub MCU system boot loader
+}
+
+void Mcal_Linflex_Init_2 (void)
+{
+	// Leave initialization mode by clearing INIT bit
+	LINFLEX_0.LINCR1.R = 0x0;
+}
+
+/*===========================================================================
+ * BSW Layer
+ *===========================================================================*/
+void Bsw_LinFlex_0_Init( void )
+{
+	Tx_Index = 0;
+	ConfigureSciPins();
+	Mcal_Linflex_Init_1();
+	Linflex_SetSpeed();
+	Mcal_Linflex_Init_2();
+	LinFlex_0_Int_Config();
+  return;
+}
+
+/*===========================================================================
+ * FS Layer
+ *===========================================================================*/
+
+/*===========================================================================
+ * ASW Layer
+ *===========================================================================*/
+
+ /*===========================================================================
+ * Testìš© ê¸°ì¡´ ì½”ë“œ
+ *===========================================================================*/
+
+/********************************************************************************
+* Function Name	: ConfigureSciPins
+* Description		: UART Pin Configuration
+* input			: None
+* return			: None
+********************************************************************************/
+static void ConfigureSciPins( void )
+{
+   Mcal_Configure_Pins();
+}
+
+/********************************************************************************
+* Function Name	: Linflex_SetSpeed
+* Description		: UART0 Baudrate Configuration according as system clock
+* input			: None
+* return			: None
+********************************************************************************/
+static void Linflex_SetSpeed( void )
+{
+	Mcal_Linflex_Set_Speed();  
 }
 
 /********************************************************************************
@@ -244,10 +309,7 @@ static void Linflex_SetSpeed( void )
 ********************************************************************************/
 void LinFlex_0_Int_Config( void )
 {
-	LINFLEX_0.LINIER.B.DRIE = 1;	// Receive Interrupt Enable
-//	LINFLEX_0.LINIER.B.DTIE = 1;	// Transmit Interrupt Enable
-	
-	return;
+	Mcal_LinFlex_0_Int_Config();
 }
 
 /********************************************************************************
@@ -258,29 +320,7 @@ void LinFlex_0_Int_Config( void )
 ********************************************************************************/
 void LinFlex_0_Init( void )
 {
-	Tx_Index = 0;
-	ConfigureSciPins();
-
-	// Enter initialization mode by setting INIT bit
-	LINFLEX_0.LINCR1.R = 0x1;
-
-	LINFLEX_0.UARTCR.B.UART = 0x1;		//Linflex working in UART mode
-
-	LINFLEX_0.UARTCR.B.TXEN = 0x1;		// Enable transmission of data now
-	LINFLEX_0.UARTCR.B.RXEN = 0x1;		//Receiver enabled
-	LINFLEX_0.UARTCR.B.WL   = 0x1;		//8 bit data
-	LINFLEX_0.UARTCR.B.PCE  = 0x0;		//Use parity for sub MCU system boot loader
-	LINFLEX_0.UARTCR.B.OP	= 0x0;		// even parity bit use for sub MCU system boot loader
-
-	Linflex_SetSpeed();
-
-	// Leave initialization mode by clearing INIT bit
-	LINFLEX_0.LINCR1.R = 0x0;
-
-//	INTC.PSR[79].R = 3;					//RX Interrupt
-//   INTC.PSR[80].R = 3;					//TX Interrupt
-	LinFlex_0_Int_Config();
-   return;
+	Bsw_LinFlex_0_Init();
 }
 
 /********************************************************************************
@@ -332,7 +372,7 @@ void LinFlex_0_RX_ISR( void )
 				CntRxData = 0xFF;						// Task ID value error
 			}
 		}
-		else if(RxBuffer[CntRxBuf].Data[1] == 0x55)					// Data Áß°£ºÎÅÍ ¼ö½ÅÇÒ °æ¿ì.
+		else if(RxBuffer[CntRxBuf].Data[1] == 0x55)					// Data ï¿½ß°ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½.
 		{
 			RxBuffer[CntRxBuf].Data[0] = RxBuffer[CntRxBuf].Data[1];
 			CntRxData = 0;
@@ -345,7 +385,7 @@ void LinFlex_0_RX_ISR( void )
 	}
 
 	++CntRxData;
-	if(CntRxData > 7)											// Task ID°¡ ID_VersionÀÏ °æ¿ì´Â CntRxData > 7 ÀÏ¼ö ÀÖÀ½.
+	if(CntRxData > 7)											// Task IDï¿½ï¿½ ID_Versionï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ CntRxData > 7 ï¿½Ï¼ï¿½ ï¿½ï¿½ï¿½ï¿½.
 	{
 		CntRxData = 0;
 		Bit_RxCompletion = 1;
