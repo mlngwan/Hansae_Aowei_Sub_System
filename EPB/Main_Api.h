@@ -129,7 +129,7 @@ void SetRunType(uint8 mode);
 uint8 GetWakeupStatus(void);
 void SetWakeupStatus(uint8 status);
 static void TaskScheduler_5ms(void);
-static void TaskScheduler_10ms(void);
+void TaskScheduler_10ms(void);
 static void TaskScheduler_20ms(void);
 void Task_Diagnostic(void);
 

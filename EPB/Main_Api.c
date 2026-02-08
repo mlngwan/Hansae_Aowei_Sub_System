@@ -24,6 +24,7 @@
 #include "Common.h"
 #include "ElectronicParkBrake.h"
 #include "FailSafe_Api.h"
+#include "Os_Task.h"
 
 static TaskControl_t g_TaskControl;
 Main_t g_MAIN;
@@ -119,19 +120,19 @@ static void TaskScheduler_TaskCalculation(void)
 {
 	if ((g_TaskControl.TickCount % (uint16)TASK_20ms) == 0U) {
 		g_TaskControl.TaskRun = (uint16)TASK_20ms;
-		ExecuteTask(TaskScheduler_5ms, &g_TaskControl.TaskCount_5ms_Cnt, &g_TaskControl.TaskCount_5ms_TimeElapsed, &g_TaskControl.TaskCount_5ms_TimeElapsed_Max);
-		ExecuteTask(TaskScheduler_10ms, &g_TaskControl.TaskCount_10ms_Cnt, &g_TaskControl.TaskCount_10ms_TimeElapsed, &g_TaskControl.TaskCount_10ms_TimeElapsed_Max);
-		ExecuteTask(TaskScheduler_20ms, &g_TaskControl.TaskCount_20ms_Cnt, &g_TaskControl.TaskCount_20ms_TimeElapsed, &g_TaskControl.TaskCount_20ms_TimeElapsed_Max);
+		ExecuteTask(OsTask_5ms, &g_TaskControl.TaskCount_5ms_Cnt, &g_TaskControl.TaskCount_5ms_TimeElapsed, &g_TaskControl.TaskCount_5ms_TimeElapsed_Max);
+		ExecuteTask(OsTask_10ms, &g_TaskControl.TaskCount_10ms_Cnt, &g_TaskControl.TaskCount_10ms_TimeElapsed, &g_TaskControl.TaskCount_10ms_TimeElapsed_Max);
+		ExecuteTask(OsTask_20ms, &g_TaskControl.TaskCount_20ms_Cnt, &g_TaskControl.TaskCount_20ms_TimeElapsed, &g_TaskControl.TaskCount_20ms_TimeElapsed_Max);
 	}	
 	else if ((g_TaskControl.TickCount % (uint16)TASK_10ms) == 0U) {
 		g_TaskControl.TaskRun = (uint16)TASK_10ms;
-		ExecuteTask(TaskScheduler_5ms, &g_TaskControl.TaskCount_5ms_Cnt, &g_TaskControl.TaskCount_5ms_TimeElapsed, &g_TaskControl.TaskCount_5ms_TimeElapsed_Max);
-		ExecuteTask(TaskScheduler_10ms, &g_TaskControl.TaskCount_10ms_Cnt, &g_TaskControl.TaskCount_10ms_TimeElapsed, &g_TaskControl.TaskCount_10ms_TimeElapsed_Max);
+		ExecuteTask(OsTask_5ms, &g_TaskControl.TaskCount_5ms_Cnt, &g_TaskControl.TaskCount_5ms_TimeElapsed, &g_TaskControl.TaskCount_5ms_TimeElapsed_Max);
+		ExecuteTask(OsTask_10ms, &g_TaskControl.TaskCount_10ms_Cnt, &g_TaskControl.TaskCount_10ms_TimeElapsed, &g_TaskControl.TaskCount_10ms_TimeElapsed_Max);
 	}
 
 	else if ((g_TaskControl.TickCount % (uint16)TASK_5ms) == 0U) {
 		g_TaskControl.TaskRun = (uint16)TASK_5ms;
-		ExecuteTask(TaskScheduler_5ms, &g_TaskControl.TaskCount_5ms_Cnt, &g_TaskControl.TaskCount_5ms_TimeElapsed, &g_TaskControl.TaskCount_5ms_TimeElapsed_Max);
+		ExecuteTask(OsTask_5ms, &g_TaskControl.TaskCount_5ms_Cnt, &g_TaskControl.TaskCount_5ms_TimeElapsed, &g_TaskControl.TaskCount_5ms_TimeElapsed_Max);
 	}
 	else
 	{
@@ -205,7 +206,7 @@ static void TaskScheduler_20ms(void)
 	}
 }
 
-static void TaskScheduler_10ms(void)
+void TaskScheduler_10ms(void)
 {	
 	if (g_MAIN.SystemStatus == SYSTEM_STATUS_NORMAL)
 	{
@@ -225,15 +226,15 @@ static void TaskScheduler_10ms(void)
 static void TaskScheduler_5ms(void)
 {
 	if (g_TaskControl.Flag.SystemDown == TRUE) 
-	{ /* IGN OffÀÎ »óÅÂ */
+	{ /* IGN Offï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ */
 		//CheckL9369RegStatus(SPI_L9369_RUN);
 		TxCanMessage();
 		CheckAdcStatus();
 		CheckPortStatus();
 		CheckCANSBCRegStatus(SPI_CANSBC_RUN);
-		/* IGN Off°¡ 1ÃÊ ÀÌ»ó Áö¼ÓµÈ °æ¿ìÀÎÁö È®ÀÎ */
+		/* IGN Offï¿½ï¿½ 1ï¿½ï¿½ ï¿½Ì»ï¿½ ï¿½ï¿½ï¿½Óµï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ È®ï¿½ï¿½ */
 		if (g_TaskControl.Flag.SystemOff == TRUE) 
-		{ /*	5ÃÊ ÈÄ off	*/
+		{ /*	5ï¿½ï¿½ ï¿½ï¿½ off	*/
 			if (++g_TaskControl.PowerOffCount > SYSTEM_POWER_OFF_TIME) 
 			{ /* 5 sec */
 				//if (GetEpbPowerLatchRequest() == 0U)
