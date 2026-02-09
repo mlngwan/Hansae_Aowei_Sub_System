@@ -7,7 +7,7 @@
 void Rte_Adc_Publish_5ms(void);
 void Rte_Adc_Publish_10ms(void);
 
-/* SWC Interface - Rte_Read API */
+/* SWC Interface - Legacy (Avg valid → Avg, 아니면 Raw 폴백) */
 Std_ReturnType Rte_Read_Adc_BatteryMotor(uint16_t* value);
 Std_ReturnType Rte_Read_Adc_BatteryValve(uint16_t* value);
 Std_ReturnType Rte_Read_Adc_Ignition(uint16_t* value);
@@ -15,5 +15,23 @@ Std_ReturnType Rte_Read_Adc_MotorA_Voltage(uint16_t* value);
 Std_ReturnType Rte_Read_Adc_MotorA_Current(int16_t* value);
 Std_ReturnType Rte_Read_Adc_MotorB_Voltage(uint16_t* value);
 Std_ReturnType Rte_Read_Adc_MotorB_Current(int16_t* value);
+
+/* SWC Interface - Raw (5ms 즉시값) */
+Std_ReturnType Rte_Read_Adc_BatteryMotor_Raw(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_BatteryValve_Raw(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_Ignition_Raw(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_MotorA_Voltage_Raw(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_MotorA_Current_Raw(int16_t* value);
+Std_ReturnType Rte_Read_Adc_MotorB_Voltage_Raw(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_MotorB_Current_Raw(int16_t* value);
+
+/* SWC Interface - Avg (10ms 평균값) */
+Std_ReturnType Rte_Read_Adc_BatteryMotor_Avg(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_BatteryValve_Avg(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_Ignition_Avg(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_MotorA_Voltage_Avg(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_MotorA_Current_Avg(int16_t* value);
+Std_ReturnType Rte_Read_Adc_MotorB_Voltage_Avg(uint16_t* value);
+Std_ReturnType Rte_Read_Adc_MotorB_Current_Avg(int16_t* value);
 
 #endif

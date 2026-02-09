@@ -28,8 +28,8 @@ void SwcAdcMon_Runnable_10ms(void)
     uint16_t motorB_voltage = 0;
     int16_t motorB_current = 0;
     
-    /* RTE를 통해 ADC 값 읽기 */
-    if (Rte_Read_Adc_BatteryMotor(&battery_mV) == E_OK) {
+    /* RTE를 통해 ADC 값 읽기 (Avg — 10ms 평균값) */
+    if (Rte_Read_Adc_BatteryMotor_Avg(&battery_mV) == E_OK) {
         /* 배터리 전압 범위 체크 */
         if (battery_mV < BATTERY_MIN_MV) {
             s_BatteryLowCount++;
@@ -47,8 +47,8 @@ void SwcAdcMon_Runnable_10ms(void)
     }
     
     /* 모터 A 전류 체크 */
-    if (Rte_Read_Adc_MotorA_Voltage(&motorA_voltage) == E_OK &&
-        Rte_Read_Adc_MotorA_Current(&motorA_current) == E_OK) {
+    if (Rte_Read_Adc_MotorA_Voltage_Avg(&motorA_voltage) == E_OK &&
+        Rte_Read_Adc_MotorA_Current_Avg(&motorA_current) == E_OK) {
         
         if (motorA_current > MOTOR_CURRENT_MAX_MA || motorA_current < -MOTOR_CURRENT_MAX_MA) {
             s_MotorOverCurrentCount++;
@@ -59,8 +59,8 @@ void SwcAdcMon_Runnable_10ms(void)
     }
     
     /* 모터 B 전류 체크 */
-    if (Rte_Read_Adc_MotorB_Voltage(&motorB_voltage) == E_OK &&
-        Rte_Read_Adc_MotorB_Current(&motorB_current) == E_OK) {
+    if (Rte_Read_Adc_MotorB_Voltage_Avg(&motorB_voltage) == E_OK &&
+        Rte_Read_Adc_MotorB_Current_Avg(&motorB_current) == E_OK) {
         
         if (motorB_current > MOTOR_CURRENT_MAX_MA || motorB_current < -MOTOR_CURRENT_MAX_MA) {
             s_MotorOverCurrentCount++;

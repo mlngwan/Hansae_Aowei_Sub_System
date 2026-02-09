@@ -1,15 +1,6 @@
 #ifndef RTE_TYPE_H
 #define RTE_TYPE_H
 
-#include <stdint.h>
+#include "Std_Types.h" /* 프로젝트 공통 표준 타입 (config/Std_Types.h) */
 
-typedef uint8_t Std_ReturnType;
-
-#ifndef E_OK
-#define E_OK ((Std_ReturnType)0u)
-#endif
-#ifndef E_NOT_OK
-#define E_NOT_OK ((Std_ReturnType)1u)
-#endif
-
-#endif
+#endif /* RTE_TYPE_H */
